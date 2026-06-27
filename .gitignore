@@ -1,0 +1,33 @@
+# Python virtual environments
+.venv/
+venv/
+ENV/
+env/
+
+# Cache directories
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.pytest_cache/
+.mypy_cache/
+
+# Node dependencies and build folders
+node_modules/
+dist/
+build/
+.next/
+
+# Local databases and vector cache
+backend/chroma_db/
+
+# Environment configurations and logs
+backend/.env
+backend/logs/*.jsonl
+backend/logs/*.log
+*.log
+
+# Editor configurations
+.vscode/
+.idea/
+.DS_Store
