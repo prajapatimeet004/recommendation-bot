@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import logging
-import os
 from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, HTTPException, Query
@@ -10,7 +9,6 @@ from pydantic import BaseModel
 from backend.schemas import ChatRequest, ChatResponse, Message, ResponseType, SearchContext
 from backend.pipeline.shopping_pipeline import run_pipeline
 from backend.services.product_service import get_paginated, has_more, enrich_product, clear_pagination
-from backend.services.product_cache import ProductCache
 from backend.services.pipeline_logger import get_pipeline_logger
 
 logger = logging.getLogger(__name__)
@@ -24,8 +22,6 @@ async def chat_endpoint(
     request: ChatRequest,
     page_token: Optional[str] = Query(None),
 ):
-    tavily_key = os.environ.get("TAVILY_API_KEY", "")
-
     # Handle "show more" pagination
     if page_token:
         return await _handle_pagination(request, page_token)
@@ -34,7 +30,6 @@ async def chat_endpoint(
         result = await run_pipeline(
             user_message=request.message,
             session_id=request.activeChatId,
-            tavily_api_key=tavily_key,
         )
 
         intent = result.get("intent", "RECOMMEND")

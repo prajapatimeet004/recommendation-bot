@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import logging
-import os
 from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, HTTPException
@@ -9,7 +8,6 @@ from pydantic import BaseModel
 
 from backend.pipeline.shopping_pipeline import run_pipeline
 from backend.services.product_service import enrich_product
-from backend.services.product_cache import ProductCache
 
 logger = logging.getLogger(__name__)
 
@@ -48,15 +46,10 @@ class SearchResponse(BaseModel):
 
 @router.post("/search", response_model=SearchResponse)
 async def search_endpoint(request: SearchRequest):
-    tavily_key = os.environ.get("TAVILY_API_KEY", "")
-    if not tavily_key:
-        raise HTTPException(status_code=503, detail="TAVILY_API_KEY is not configured")
-
     try:
         result = await run_pipeline(
             user_message=request.query,
             session_id="search-direct",
-            tavily_api_key=tavily_key,
         )
 
 
