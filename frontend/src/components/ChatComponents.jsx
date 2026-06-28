@@ -160,13 +160,13 @@ export const ProductCard = ({ product, onCompareToggle, isCompared }) => {
   const srcColor = sourceColors[product.source] || { bg: 'bg-slate-500/10', text: 'text-slate-400', border: 'border-slate-500/30' };
 
   return (
-    <div className="flex flex-col rounded-xl overflow-hidden glass-card h-full border border-slate-700/50">
+    <div className="flex flex-col rounded-xl overflow-hidden glass-card h-full border border-slate-700/50 hover:border-indigo-500/40 hover:shadow-lg hover:shadow-indigo-950/40 transition-all duration-300 group">
       <div className="relative h-44 overflow-hidden bg-slate-900 border-b border-slate-800">
         {product.image_url ? (
           <img
             src={product.image_url}
             alt={product.name}
-            className="w-full h-full object-cover transition-transform duration-500 hover:scale-110"
+            className="w-full h-full object-cover transition-transform duration-500 group-hover:scale-110"
             loading="lazy"
           />
         ) : (
@@ -214,6 +214,17 @@ export const ProductCard = ({ product, onCompareToggle, isCompared }) => {
             <Star className="w-3.5 h-3.5 fill-current mr-0.5" />
             <span className="font-medium">{product.rating}</span>
             <span className="text-slate-500 ml-1">/ 5</span>
+          </div>
+        )}
+
+        {/* Quick Specs Pills */}
+        {product.specifications && Object.keys(product.specifications).length > 0 && (
+          <div className="flex flex-wrap gap-1 mb-2.5">
+            {Object.entries(product.specifications).slice(0, 3).map(([key, val]) => (
+              <span key={key} className="text-[10px] font-medium bg-slate-800/60 border border-slate-700/30 text-indigo-300 px-2 py-0.5 rounded-full capitalize">
+                {key.replace('_', ' ')}: {val}
+              </span>
+            ))}
           </div>
         )}
 

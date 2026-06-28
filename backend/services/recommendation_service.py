@@ -65,9 +65,21 @@ class RecommendationService:
             return 0.8
         if price <= budget:
             ratio = price / budget
-            if ratio <= 0.5:
-                return 0.6
-            return 1.0
+            category = product.get("category", "").lower()
+            if category in ("smartphones", "laptops"):
+                if ratio < 0.30:
+                    return 0.15
+                if ratio < 0.50:
+                    return 0.40
+                if ratio < 0.70:
+                    return 0.80
+                return 1.0
+            else:
+                if ratio < 0.20:
+                    return 0.40
+                if ratio < 0.50:
+                    return 0.70
+                return 1.0
         over = price - budget
         if over <= budget * 0.1:
             return 0.7

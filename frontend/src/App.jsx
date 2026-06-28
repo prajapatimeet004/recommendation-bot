@@ -58,6 +58,16 @@ function App() {
     return () => window.removeEventListener('resize', handleResize);
   }, []);
 
+  // Set up Server-Sent Events (SSE) stream for real-time product discovery
+  useEffect(() => {
+    if (activeConversationId) {
+      useChatStore.getState().setupStream(activeConversationId);
+    }
+    return () => {
+      useChatStore.getState().setupStream(null);
+    };
+  }, [activeConversationId]);
+
   const handleSend = async (textToSend) => {
     const messageText = textToSend || input;
     if (!messageText.trim()) return;
@@ -384,10 +394,18 @@ function App() {
                           </div>
                         )}
 
+                        {/* Live discovery notification */}
+                        {isBot && msg.system_notification && (
+                          <div className="mt-3 flex items-center gap-2 p-2.5 px-4 rounded-xl bg-emerald-500/10 border border-emerald-500/20 text-emerald-400 text-xs font-semibold animate-pulse shadow-md shadow-emerald-950/20">
+                            <AlertCircle className="w-4.5 h-4.5 text-emerald-400 shrink-0 animate-bounce" />
+                            <span>{msg.system_notification}</span>
+                          </div>
+                        )}
+
                         {/* Interactive Product cards grid */}
                         {isBot && msg.products && msg.products.length > 0 && (
                           <div className="mt-5 pt-4 border-t border-slate-800/80">
-                            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
                               {msg.products.map((prod, idx) => (
                                 <div key={prod.id || `prod-${idx}`}>
                                   <ProductCard 

@@ -26,6 +26,64 @@ export const useChatStore = create(
       cart: [],
       loading: false,
       paginationLoading: false,
+      activeEventSource: null,
+
+      setupStream: (chatId) => {
+        const { activeEventSource } = get();
+        if (activeEventSource) {
+          activeEventSource.close();
+        }
+
+        if (!chatId || chatId === 'welcome-chat') {
+          set({ activeEventSource: null });
+          return;
+        }
+
+        const url = `${API_BASE_URL}/chat/stream/${chatId}`;
+        const source = new EventSource(url);
+
+        source.onmessage = (event) => {
+          try {
+            const data = JSON.parse(event.data);
+            if (data.type === 'new_products') {
+              const count = data.count;
+              const newProducts = data.products;
+
+              set((state) => {
+                const conversations = state.conversations.map(c => {
+                  if (c.id === chatId) {
+                    const messages = [...c.messages];
+                    const lastMsg = messages[messages.length - 1];
+                    if (lastMsg && lastMsg.role === 'assistant') {
+                      const currentProducts = lastMsg.products || [];
+                      const uniqueNew = newProducts.filter(
+                        np => !currentProducts.some(cp => (cp.id || cp.product_url || cp.url) === (np.id || np.product_url || np.url))
+                      );
+
+                      if (uniqueNew.length === 0) return c;
+
+                      const updatedMsg = {
+                        ...lastMsg,
+                        products: [...currentProducts, ...uniqueNew],
+                        system_notification: `${uniqueNew.length} new product(s) found and appended below.`,
+                        totalProducts: (lastMsg.totalProducts || 0) + uniqueNew.length
+                      };
+                      messages[messages.length - 1] = updatedMsg;
+                    }
+                    return { ...c, messages };
+                  }
+                  return c;
+                });
+                return { conversations };
+              });
+            }
+          } catch (e) {
+            console.error("Error parsing SSE event:", e);
+          }
+        };
+
+        set({ activeEventSource: source });
+      },
 
       setActiveConversation: (id) => set({ activeConversationId: id }),
 

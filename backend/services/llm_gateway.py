@@ -38,10 +38,10 @@ _MODELS_REGISTRY: Dict[str, ModelConfig] = {
 # ---------------------------------------------------------------------------
 
 _TASK_MODELS: Dict[str, List[str]] = {
-    "intent_classification": ["gpt-oss-20b", "nemotron-3-nano-30b", "llama-3.3-70b"],
-    "context_keyword_generation": ["gpt-oss-20b", "nemotron-3-nano-30b"],
+    "intent_classification": ["llama-3.3-70b", "gpt-oss-20b", "nemotron-3-nano-30b"],
+    "context_keyword_generation": ["llama-3.3-70b", "gpt-oss-20b", "nemotron-3-nano-30b"],
     "product_extraction": ["gpt-oss-120b", "qwen3-next-80b-a3b", "nemotron-3-ultra-550b"],
-    "response_generation": ["llama-3.3-70b", "qwen3-next-80b-a3b", "gpt-oss-120b"],
+    "response_generation": ["gpt-oss-120b", "qwen3-next-80b-a3b", "llama-3.3-70b"],
     "comparison": ["gpt-oss-120b", "llama-3.3-70b", "qwen3-next-80b-a3b"],
     "summarization": ["gpt-oss-20b", "nemotron-3-nano-30b", "llama-3.3-70b"],
 }
@@ -59,11 +59,11 @@ class TaskProfile(TypedDict):
 _TASK_PROFILES: Dict[str, TaskProfile] = {
     "intent_classification": {
         "model_keys": _TASK_MODELS["intent_classification"],
-        "default_params": {"temperature": 0.1, "max_tokens": 512},
+        "default_params": {"temperature": 0.1, "max_tokens": 1024},
     },
     "context_keyword_generation": {
         "model_keys": _TASK_MODELS["context_keyword_generation"],
-        "default_params": {"temperature": 0.2, "max_tokens": 512},
+        "default_params": {"temperature": 0.2, "max_tokens": 1024},
     },
     "product_extraction": {
         "model_keys": _TASK_MODELS["product_extraction"],
@@ -71,7 +71,7 @@ _TASK_PROFILES: Dict[str, TaskProfile] = {
     },
     "response_generation": {
         "model_keys": _TASK_MODELS["response_generation"],
-        "default_params": {"temperature": 0.7, "max_tokens": 2048},
+        "default_params": {"temperature": 0.3, "max_tokens": 2048},
     },
     "comparison": {
         "model_keys": _TASK_MODELS["comparison"],

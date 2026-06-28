@@ -16,6 +16,7 @@ class ResponseType(str, Enum):
     GENERAL = "GENERAL"
     EXPLAIN = "EXPLAIN"
     GREETING = "GREETING"
+    NEEDS_CLARIFICATION = "NEEDS_CLARIFICATION"
 
 
 class SearchContext(BaseModel):
