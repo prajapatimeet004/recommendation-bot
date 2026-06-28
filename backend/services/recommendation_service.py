@@ -20,11 +20,35 @@ class RecommendationService:
         query: str = "",
         budget: Optional[float] = None,
     ) -> List[Dict[str, Any]]:
-        if not products:
-            return []
+        # Deduplicate products by id/url before scoring
+        seen = set()
+        deduped = []
+        for p in products:
+            pid = p.get("id") or p.get("product_url") or p.get("url")
+            if pid:
+                pid = str(pid).strip()
+                if pid.startswith("http"):
+                    pid = pid.split("?")[0].rstrip("/")
+            if pid not in seen:
+                seen.add(pid)
+                deduped.append(p)
+
+        # Strict gender filtering
+        from backend.services.keyword_service import detect_gender
+        intent_gender = detect_gender(query)
+        if intent_gender in ("men", "women"):
+            filtered_by_gender = []
+            for p in deduped:
+                p_gender = self._detect_product_gender(p)
+                if intent_gender == "men" and p_gender == "women":
+                    continue
+                if intent_gender == "women" and p_gender == "men":
+                    continue
+                filtered_by_gender.append(p)
+            deduped = filtered_by_gender
 
         scored = []
-        for p in products:
+        for p in deduped:
             score = self._compute_score(p, query, budget)
             p["_composite_score"] = round(score, 4)
             if p["_composite_score"] >= 0.1:
@@ -66,7 +90,7 @@ class RecommendationService:
         if price <= budget:
             ratio = price / budget
             category = product.get("category", "").lower()
-            if category in ("smartphones", "laptops"):
+            if category in ("smartphones", "laptops", "home_appliances"):
                 if ratio < 0.30:
                     return 0.15
                 if ratio < 0.50:
@@ -75,10 +99,6 @@ class RecommendationService:
                     return 0.80
                 return 1.0
             else:
-                if ratio < 0.20:
-                    return 0.40
-                if ratio < 0.50:
-                    return 0.70
                 return 1.0
         over = price - budget
         if over <= budget * 0.1:
@@ -105,4 +125,31 @@ class RecommendationService:
         if product.get("mrp") and product.get("mrp", 0) > 0:
             fields += 1
         return fields / total
+
+    def _detect_product_gender(self, product: Dict[str, Any]) -> Optional[str]:
+        import re
+        p_gender = product.get("gender")
+        if p_gender:
+            p_gender_low = str(p_gender).lower()
+            if "women" in p_gender_low:
+                return "women"
+            if "men" in p_gender_low:
+                return "men"
+            if "unisex" in p_gender_low:
+                return "unisex"
+
+        name = product.get("name", "").lower()
+        description = product.get("description", "").lower()
+        text = f"{name} {description}"
+
+        has_men = bool(re.search(r'\b(men|mens|male|boy|boys|gents|gentlemen|his|man|guy|guys)\b', text))
+        has_women = bool(re.search(r'\b(women|womens|female|girl|girls|ladies|lady|her|woman|gal)\b', text))
+
+        if "unisex" in text or (has_men and has_women):
+            return "unisex"
+        if has_men:
+            return "men"
+        if has_women:
+            return "women"
+        return None
 

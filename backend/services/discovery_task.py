@@ -45,18 +45,29 @@ async def discover_and_update_products_task(
             logger.info("No discovered products passed the relevance threshold.")
             return
 
-        # 4. Deduplicate against database
+        # 4. Deduplicate accepted products within this batch and against database
         new_products = []
+        seen_in_batch = set()
         for p in accepted_products:
+            pid = p.get("id") or p.get("product_url") or p.get("url")
+            if not pid:
+                continue
+            pid = str(pid).strip()
+            if pid.startswith("http"):
+                pid = pid.split("?")[0].rstrip("/")
+            if pid in seen_in_batch:
+                continue
+            seen_in_batch.add(pid)
+
             is_duplicate = False
             try:
                 col = vector_service.get_collection(p["category"])
-                existing = col.get(ids=[p["id"]])
+                existing = col.get(ids=[pid])
                 if existing and existing.get("ids"):
                     is_duplicate = True
                     logger.info("  -> DUPLICATE (by ID) found in database: %s", p.get("name"))
             except Exception as e:
-                logger.warning("Error checking duplicate for product %s: %s", p.get("id"), e)
+                logger.warning("Error checking duplicate for product %s: %s", pid, e)
 
             if not is_duplicate:
                 new_products.append(p)
@@ -97,6 +108,41 @@ def calculate_relevance_score(
     intent: Dict[str, Any],
     query_embedding: List[float]
 ) -> float:
+    # Strict gender filtering
+    intent_gender = intent.get("gender")
+    if intent_gender in ("men", "women"):
+        import re
+        p_gender = product.get("gender")
+        if not p_gender:
+            name = product.get("name", "").lower()
+            description = product.get("description", "").lower()
+            text = f"{name} {description}"
+            has_men = bool(re.search(r'\b(men|mens|male|boy|boys|gents|gentlemen|his|man|guy|guys)\b', text))
+            has_women = bool(re.search(r'\b(women|womens|female|girl|girls|ladies|lady|her|woman|gal)\b', text))
+            if "unisex" in text or (has_men and has_women):
+                p_gender = "unisex"
+            elif has_men:
+                p_gender = "men"
+            elif has_women:
+                p_gender = "women"
+            else:
+                p_gender = None
+        else:
+            p_gender_low = str(p_gender).lower()
+            if "women" in p_gender_low:
+                p_gender = "women"
+            elif "men" in p_gender_low:
+                p_gender = "men"
+            elif "unisex" in p_gender_low:
+                p_gender = "unisex"
+            else:
+                p_gender = None
+
+        if intent_gender == "men" and p_gender == "women":
+            return 0.0
+        if intent_gender == "women" and p_gender == "men":
+            return 0.0
+
     # 1. Category match
     cat_match = 1.0 if product.get("category", "").lower() == intent.get("category", "").lower() else 0.0
 
@@ -117,7 +163,7 @@ def calculate_relevance_score(
         if price <= budget:
             ratio = price / budget
             category = product.get("category", "").lower()
-            if category in ("smartphones", "laptops"):
+            if category in ("smartphones", "laptops", "home_appliances"):
                 if ratio < 0.30:
                     budget_score = 0.15
                 elif ratio < 0.50:
@@ -127,12 +173,7 @@ def calculate_relevance_score(
                 else:
                     budget_score = 1.0
             else:
-                if ratio < 0.20:
-                    budget_score = 0.40
-                elif ratio < 0.50:
-                    budget_score = 0.70
-                else:
-                    budget_score = 1.0
+                budget_score = 1.0
         else:
             over = price - budget
             if over <= budget * 0.1:

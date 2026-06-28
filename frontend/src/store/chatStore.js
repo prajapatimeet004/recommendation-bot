@@ -4,6 +4,39 @@ import axios from 'axios'
 
 const API_BASE_URL = 'http://localhost:8000'
 
+const normalizeProductKey = (key) => {
+  if (!key) return '';
+  let str = String(key).trim();
+  if (str.startsWith('http://') || str.startsWith('https://')) {
+    try {
+      const url = new URL(str);
+      const pid = url.searchParams.get('pid');
+      if (pid) {
+        return `${url.origin}${url.pathname}?pid=${pid}`;
+      }
+      return `${url.origin}${url.pathname}`;
+    } catch (e) {
+      return str.split('?')[0];
+    }
+  }
+  return str;
+};
+
+const deduplicateProducts = (products) => {
+  if (!products) return [];
+  const seen = new Set();
+  return products.filter(p => {
+    const key = p.id || p.product_url || p.url;
+    if (!key) return true;
+    const cleanKey = normalizeProductKey(key);
+    if (seen.has(cleanKey)) {
+      return false;
+    }
+    seen.add(cleanKey);
+    return true;
+  });
+};
+
 export const useChatStore = create(
   persist(
     (set, get) => ({
@@ -47,7 +80,7 @@ export const useChatStore = create(
             const data = JSON.parse(event.data);
             if (data.type === 'new_products') {
               const count = data.count;
-              const newProducts = data.products;
+              const newProducts = data.products || [];
 
               set((state) => {
                 const conversations = state.conversations.map(c => {
@@ -56,17 +89,17 @@ export const useChatStore = create(
                     const lastMsg = messages[messages.length - 1];
                     if (lastMsg && lastMsg.role === 'assistant') {
                       const currentProducts = lastMsg.products || [];
-                      const uniqueNew = newProducts.filter(
-                        np => !currentProducts.some(cp => (cp.id || cp.product_url || cp.url) === (np.id || np.product_url || np.url))
-                      );
-
-                      if (uniqueNew.length === 0) return c;
+                      const combined = [...currentProducts, ...newProducts];
+                      const uniqueProducts = deduplicateProducts(combined);
+                      
+                      const addedCount = uniqueProducts.length - currentProducts.length;
+                      if (addedCount === 0) return c;
 
                       const updatedMsg = {
                         ...lastMsg,
-                        products: [...currentProducts, ...uniqueNew],
-                        system_notification: `${uniqueNew.length} new product(s) found and appended below.`,
-                        totalProducts: (lastMsg.totalProducts || 0) + uniqueNew.length
+                        products: uniqueProducts,
+                        system_notification: `${addedCount} new product(s) found and appended below.`,
+                        totalProducts: uniqueProducts.length
                       };
                       messages[messages.length - 1] = updatedMsg;
                     }
@@ -159,7 +192,7 @@ export const useChatStore = create(
             role: 'assistant',
             content: data.message || data.reply || '',
             timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-            products: data.products,
+            products: deduplicateProducts(data.products),
             comparison: data.comparison,
             comparisonTable: data.comparison_table,
             bundle: data.bundle,
@@ -223,11 +256,13 @@ export const useChatStore = create(
               if (c.id === activeConversationId) {
                 const lastMsg = c.messages[c.messages.length - 1];
                 if (lastMsg && lastMsg.role === 'assistant' && lastMsg.products) {
+                  const combined = [...lastMsg.products, ...newProducts];
+                  const uniqueProducts = deduplicateProducts(combined);
                   const updatedMsg = {
                     ...lastMsg,
-                    products: [...lastMsg.products, ...newProducts],
+                    products: uniqueProducts,
                     paginationToken: newPaginationToken,
-                    totalProducts: (lastMsg.totalProducts || 0) + newProducts.length
+                    totalProducts: uniqueProducts.length
                   };
                   const messages = [...c.messages];
                   messages[messages.length - 1] = updatedMsg;

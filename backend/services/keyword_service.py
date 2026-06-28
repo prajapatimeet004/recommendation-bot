@@ -238,10 +238,28 @@ class KeywordService:
         return "other"
 
     def _fallback_keywords(self, text: str) -> List[str]:
-        words = text.strip().split()
-        if len(words) <= 5:
-            return [text.strip()]
-        return [text.strip(), " ".join(words[:5]), " ".join(words[-3:])]
+        low = text.lower()
+        # Remove punctuation except hyphens
+        low = re.sub(r'[^\w\s-]', '', low)
+        words = low.split()
+        stop_words = {
+            "i", "want", "need", "buy", "suggest", "recommend", "show", "me", "the", "a", "an",
+            "under", "below", "above", "over", "budget", "price", "within", "around", "for", "with",
+            "in", "of", "and", "or", "to", "from", "on", "at", "by", "only", "please"
+        }
+        keywords = []
+        for w in words:
+            if w not in stop_words and not w.isdigit():
+                keywords.append(w)
+        
+        if keywords:
+            unified = " ".join(keywords)
+            res = [unified]
+            for kw in keywords:
+                if kw not in res and len(kw) > 1:
+                    res.append(kw)
+            return res
+        return [text.strip()]
 
     def _strip_fences(self, text: str) -> str:
         text = text.strip()

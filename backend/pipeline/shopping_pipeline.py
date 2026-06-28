@@ -63,6 +63,20 @@ async def run_pipeline(
 
     if history:
         plog.info("  -> history has %d messages, extracting context", len(history))
+        if len(history) >= 2:
+            last_msg = history[-1]
+            prev_user_msg = history[-2]
+            if (
+                last_msg.role == "assistant"
+                and last_msg.response_type == "NEEDS_CLARIFICATION"
+                and prev_user_msg.role == "user"
+            ):
+                plog.info(
+                    "  -> Clarification answer detected. Combining '%s' with previous query '%s'",
+                    user_message,
+                    prev_user_msg.content,
+                )
+                user_message = f"{prev_user_msg.content} {user_message}"
 
     # Format conversation context from history (last 5 user+assistant pairs)
     conversation_context = _format_conversation_context(history) if history else ""
@@ -197,11 +211,22 @@ async def run_pipeline(
         # Deduplicate and store all accepted scraped products in ChromaDB
         if accepted_products:
             new_products = []
+            seen_in_batch = set()
             for p in accepted_products:
+                pid = p.get("id") or p.get("product_url") or p.get("url")
+                if not pid:
+                    continue
+                pid = str(pid).strip()
+                if pid.startswith("http"):
+                    pid = pid.split("?")[0].rstrip("/")
+                if pid in seen_in_batch:
+                    continue
+                seen_in_batch.add(pid)
+
                 is_duplicate = False
                 try:
                     col = _vector_service.get_collection(p["category"])
-                    existing = col.get(ids=[p["id"]])
+                    existing = col.get(ids=[pid])
                     if existing and existing.get("ids"):
                          is_duplicate = True
                 except Exception:

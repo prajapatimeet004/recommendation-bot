@@ -407,7 +407,7 @@ function App() {
                           <div className="mt-5 pt-4 border-t border-slate-800/80">
                             <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
                               {msg.products.map((prod, idx) => (
-                                <div key={prod.id || `prod-${idx}`}>
+                                <div key={`${prod.id || prod.product_url || prod.url || 'prod'}-${idx}`}>
                                   <ProductCard 
                                     product={prod}
                                     onCompareToggle={handleCompareToggle}
@@ -589,7 +589,7 @@ function App() {
                   </div>
                 ) : (
                   cart.map((item, idx) => (
-                    <div key={item.id || `cart-${idx}`} className="flex gap-3 p-3 rounded-xl bg-slate-900/60 border border-slate-800/50">
+                    <div key={`${item.id || item.product_url || item.url || 'cart'}-${idx}`} className="flex gap-3 p-3 rounded-xl bg-slate-900/60 border border-slate-800/50">
                       {item.image_url ? (
                         <img 
                           src={item.image_url} 
