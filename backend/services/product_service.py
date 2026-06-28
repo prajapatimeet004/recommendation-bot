@@ -47,6 +47,33 @@ def clear_pagination(session_id: str, query: str) -> None:
     key = _make_key(session_id, query)
     _PAGINATION_STORE.pop(key, None)
 
+def clean_product_image_url(url: str, category: Optional[str] = None) -> str:
+    # Default premium high-quality placeholders
+    placeholders = {
+        "smartphones": "https://images.unsplash.com/photo-1511707171634-5f897ff02aa9?w=500",
+        "laptops": "https://images.unsplash.com/photo-1496181130204-7552cc14f1d0?w=500",
+        "watches": "https://images.unsplash.com/photo-1523275335684-37898b6baf30?w=500",
+        "fashion": "https://images.unsplash.com/photo-1483985988355-763728e1935b?w=500",
+        "clothing": "https://images.unsplash.com/photo-1483985988355-763728e1935b?w=500",
+        "footwear": "https://images.unsplash.com/photo-1542291026-7eec264c27ff?w=500",
+        "home_appliances": "https://images.unsplash.com/photo-1584622650111-993a426fbf0a?w=500",
+    }
+    default_placeholder = "https://images.unsplash.com/photo-1505740420928-5e560c06d30e?w=500"
+
+    if not url:
+        if category and category.lower() in placeholders:
+            return placeholders[category.lower()]
+        return default_placeholder
+
+    url_str = str(url).strip()
+    # Amazon CDN images fail/expire or hotlink-block, so we replace them with high-quality category placeholders
+    if "media-amazon.com" in url_str:
+        if category and category.lower() in placeholders:
+            return placeholders[category.lower()]
+        return default_placeholder
+
+    return url_str
+
 
 def _to_output(product: Dict[str, Any]) -> ProductOutput:
     raw_score = product.get("_score", 0) or product.get("score", 0) or 0
@@ -54,7 +81,8 @@ def _to_output(product: Dict[str, Any]) -> ProductOutput:
 
     # Resolve urls and images
     p_url = product.get("url") or product.get("product_url") or product.get("source_url", "")
-    p_image = product.get("image") or product.get("image_url") or ""
+    category = product.get("category")
+    p_image = clean_product_image_url(product.get("image") or product.get("image_url") or "", category)
 
     return ProductOutput(
         id=product.get("id") or p_url or f"prod-{abs(hash(str(product.get('name', ''))))}",

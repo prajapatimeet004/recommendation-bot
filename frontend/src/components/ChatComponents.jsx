@@ -139,6 +139,8 @@ export const ProductCard = ({ product, onCompareToggle, isCompared }) => {
   const [showSpecs, setShowSpecs] = useState(false);
   const [added, setAdded] = useState(false);
 
+  const [imgError, setImgError] = useState(false);
+
   const handleAddToCart = () => {
     addToCart(product);
     setAdded(true);
@@ -162,17 +164,18 @@ export const ProductCard = ({ product, onCompareToggle, isCompared }) => {
   return (
     <div className="flex flex-col rounded-xl overflow-hidden glass-card h-full border border-slate-700/50 hover:border-indigo-500/40 hover:shadow-lg hover:shadow-indigo-950/40 transition-all duration-300 group">
       <div className="relative h-44 overflow-hidden bg-slate-900 border-b border-slate-800">
-        {product.image_url ? (
+        {product.image_url && !imgError ? (
           <img
             src={product.image_url}
             alt={product.name}
             className="w-full h-full object-cover transition-transform duration-500 group-hover:scale-110"
             loading="lazy"
+            onError={() => setImgError(true)}
           />
         ) : (
-          <div className="w-full h-full flex flex-col items-center justify-center bg-slate-950 text-slate-700 text-xs">
-            <ShoppingBag className="w-8 h-8 mb-1.5 text-slate-800" />
-            <span>No image available</span>
+          <div className="w-full h-full flex flex-col items-center justify-center bg-slate-950 text-slate-500 text-xs">
+            <ShoppingBag className="w-8 h-8 mb-1.5 text-slate-700" />
+            <span>🛍️ No Image Available</span>
           </div>
         )}
         {/* Top-left: Similarity Score */}
@@ -458,7 +461,15 @@ export const BundleView = ({ bundle }) => {
         {bundle.items.map((item, idx) => (
           <div key={idx} className="flex gap-3 p-3 rounded-xl bg-slate-900/60 border border-slate-800/50">
             {item.image_url && (
-              <img src={item.image_url} alt={item.name} className="w-14 h-14 object-cover rounded-lg bg-slate-950 border border-slate-800 flex-shrink-0" />
+              <img 
+                src={item.image_url} 
+                alt={item.name} 
+                className="w-14 h-14 object-cover rounded-lg bg-slate-950 border border-slate-800 flex-shrink-0"
+                onError={(e) => {
+                  e.target.onerror = null;
+                  e.target.src = "https://images.unsplash.com/photo-1505740420928-5e560c06d30e?w=500";
+                }}
+              />
             )}
             <div className="flex-grow">
               <div className="flex justify-between items-start">

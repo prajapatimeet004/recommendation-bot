@@ -53,10 +53,15 @@ def health_check():
 
 
 @app.post("/chat-legacy", response_model=ChatResponse)
-def chat_endpoint_legacy(request: ChatRequest):
+async def chat_endpoint_legacy(request: ChatRequest):
     try:
         tavily_key = os.environ.get("TAVILY_API_KEY", "")
-        result = process_query(request.message, tavily_api_key=tavily_key)
+        result = await process_query(
+            request.message,
+            tavily_api_key=tavily_key,
+            history=request.history,
+            session_id=request.activeChatId or "default"
+        )
         return ChatResponse(
             message=result.get("message", result.get("reply", "")),
             response_type=result.get("response_type", "RECOMMEND"),

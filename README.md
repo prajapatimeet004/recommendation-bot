@@ -1,128 +1,72 @@
-# AI Shopping Assistant - Intelligent Virtual Sales Associate
+# AI Shopping Assistant
 
-A full-stack modern web application featuring an intelligent conversational sales assistant designed to guide customers through e-commerce product discovery, comparisons, and budget-based selections.
-
----
-
-## Tech Stack
-
-- **Frontend**: React (Vite) + Tailwind CSS + Framer Motion + Zustand + Axios
-- **Backend**: FastAPI + Python 3.11+ + Uvicorn + Pydantic
-- **Vector Store**: ChromaDB (all-MiniLM-L6-v2 via ONNX)
-- **LLM Gateway**: LiteLLM (OpenRouter, multiple free models)
+A conversational AI shopping assistant with multi-chat sessions and context-aware LLM recommendations.
 
 ---
 
-## Project Structure
+## Prerequisites
 
-```
-recommandtion chatbot/
-├── backend/
-│   ├── main.py                 # FastAPI App, CORS, Routes
-│   ├── schemas.py              # Request/Response Pydantic models
-│   ├── recommender.py          # Thin compatibility wrapper
-│   ├── models/                 # Domain models (Product, etc.)
-│   ├── services/               # Business logic layer
-│   │   ├── llm_gateway.py      # Multi-model LLM router
-│   │   ├── keyword_service.py  # LLM intent + keyword generation
-│   │   ├── tavily_service.py   # Tavily search integration
-│   │   ├── regex_parser.py     # Pure regex product extraction
-│   │   ├── recommendation_service.py  # Composite scoring
-│   │   ├── vector_service.py   # ChromaDB operations
-│   │   └── ...
-│   ├── routers/                # API route handlers
-│   ├── pipeline/               # Orchestration pipeline
-│   ├── requirements.txt
-│   └── .env
-├── frontend/
-│   └── src/
-│       ├── components/ChatComponents.jsx  # ProductCard, ComparisonView, etc.
-│       ├── store/chatStore.js             # Zustand state + API calls
-│       ├── App.jsx
-│       └── main.jsx
-├── run.py                      # Backend launcher (from project root)
-├── .env
-└── README.md
-```
+- Python 3.10+
+- Node.js 18+
 
 ---
 
-## Getting Started
+## Setup & Run
 
-### 1. Backend (FastAPI)
+### 1. Backend
 
-Ensure you have **Python 3.10+** installed.
-
-Open a terminal at the **project root** (the folder containing `backend/`, `frontend/`, `run.py`).
-
-Activate the virtual environment:
-- **Windows (PowerShell)**:
-  ```powershell
-  .venv\Scripts\Activate.ps1
-  ```
-- **Windows (CMD)**:
-  ```cmd
-  .venv\Scripts\activate.bat
-  ```
-- **macOS/Linux**:
-  ```bash
-  source .venv/bin/activate
-  ```
-
-Install dependencies:
 ```powershell
+# From project root
+python -m venv .venv
+.venv\Scripts\Activate.ps1
 pip install -r backend/requirements.txt
+
+# Configure API keys
+copy backend\.env.example backend\.env
+# Edit backend\.env and add your keys:
+#   OPENROUTER_API_KEY  (https://openrouter.ai/keys)
+#   TAVILY_API_KEY      (https://app.tavily.com)
+#   APIFY_API_TOKEN     (https://console.apify.com)
+
+# Start backend
+uvicorn backend.main:app --reload --port 8000
 ```
 
-Copy and configure environment variables:
-```powershell
-copy backend\.env .env
-```
+### 2. Frontend
 
-Launch the server (from project root):
-```powershell
-python run.py
-```
-
-The server starts at `http://127.0.0.1:8000` with hot-reloading. Verify at `http://127.0.0.1:8000/health`.
-
-Alternative startup commands (also from project root):
-```powershell
-uvicorn backend.main:app --reload
-```
-or
-```powershell
-python -m backend.main
-```
-
-### 2. Frontend (Vite + React)
-
-Open a **new terminal** at the project root:
 ```powershell
 cd frontend
 npm install
 npm run dev
 ```
 
-The frontend runs at `http://localhost:5173`.
+### 3. Open
+
+- **Frontend**: http://localhost:5173
+- **Backend**: http://localhost:8000
+- **Health**: http://localhost:8000/health
 
 ---
 
-## Conversational Commands to Try
+## Quick Start Commands
 
-1. **Seasonal fashion**: *"I need clothes for Navratri"*
-2. **Budget electronics**: *"Suggest a phone under 40000"*
-3. **Lifestyle bundle**: *"I'm joining a gym"*
-4. **Comparison**: *"Compare iPhone and Samsung phones"*
-5. **Follow-up**: *"Show more"*
+| Try this | What happens |
+|----------|-------------|
+| *"Best laptop under ₹80,000"* | Budget-aware product search |
+| *"I need clothes for Navratri"* | Seasonal fashion recommendations |
+| *"Show me Samsung tablets"* | Brand search |
+| *"Accessories for that"* | Follow-up (uses chat context) |
+| *"Compare iPhone and Samsung"* | Side-by-side comparison |
+| *"Show more"* | Paginate results |
 
 ---
 
-## API Endpoints
+## Environment Variables
 
-| Method | Path | Description |
-|--------|------|-------------|
-| GET | `/` | Root info |
-| GET | `/health` | Health check |
-| POST | `/chat` | Conversational product search |
-| POST | `/search` | Direct product lookup |
+| Variable | Required | Get it at |
+|----------|----------|-----------|
+| `OPENROUTER_API_KEY` | Yes | https://openrouter.ai/keys |
+| `TAVILY_API_KEY` | Yes | https://app.tavily.com |
+| `APIFY_API_TOKEN` | Yes | https://console.apify.com |
+| `GEMINI_API_KEY` | No | Fallback LLM |
+| `GROQ_API_KEY` | No | Fallback LLM |

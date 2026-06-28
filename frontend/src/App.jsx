@@ -595,6 +595,10 @@ function App() {
                           src={item.image_url} 
                           alt={item.name} 
                           className="w-16 h-16 object-cover rounded-lg bg-slate-950 border border-slate-800 flex-shrink-0"
+                          onError={(e) => {
+                            e.target.onerror = null;
+                            e.target.src = "https://images.unsplash.com/photo-1505740420928-5e560c06d30e?w=500";
+                          }}
                         />
                       ) : (
                         <div className="w-16 h-16 rounded-lg bg-slate-950 border border-slate-800 flex items-center justify-center text-[10px] text-slate-700 flex-shrink-0">
