@@ -316,6 +316,33 @@ export const ProductCard = ({ product, onCompareToggle, isCompared, index = 0 })
   );
 };
 
+export const ComparisonPreviewCard = ({ comparison, onOpen }) => {
+  if (!comparison || !comparison.products || comparison.products.length < 2) return null;
+  const [prod1, prod2] = comparison.products;
+  return (
+    <div className="bg-slate-900/65 border border-indigo-500/20 hover:border-indigo-500/40 p-4.5 rounded-2xl flex flex-col sm:flex-row sm:items-center justify-between gap-4 mt-2 transition-all shadow-[0_4px_20px_-4px_rgba(99,102,241,0.1)]">
+      <div className="flex items-center gap-3 min-w-0">
+        <div className="w-10 h-10 rounded-xl bg-indigo-500/10 flex items-center justify-center text-indigo-400 shrink-0">
+          <Activity className="w-5 h-5" />
+        </div>
+        <div className="min-w-0">
+          <h4 className="font-bold text-xs text-white">Side-by-Side Comparison Matrix</h4>
+          <p className="text-[10px] text-slate-400 mt-0.5 truncate">
+            Comparing {prod1.name} and {prod2.name}
+          </p>
+        </div>
+      </div>
+      <button
+        onClick={onOpen}
+        className="py-2 px-4 rounded-xl bg-indigo-600 hover:bg-indigo-500 active:scale-95 text-white text-xs font-semibold transition-all shadow-lg shadow-indigo-950/40 border border-brand-400/20 cursor-pointer flex items-center gap-1.5 shrink-0"
+      >
+        <span>Compare Products</span>
+        <ArrowRight className="w-3.5 h-3.5" />
+      </button>
+    </div>
+  );
+};
+
 export const ComparisonView = ({ comparison }) => {
   const addToCart = useChatStore(state => state.addToCart);
 

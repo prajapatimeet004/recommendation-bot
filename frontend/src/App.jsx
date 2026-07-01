@@ -2,11 +2,13 @@ import React, { useState, useEffect, useRef } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { 
   Sparkles, MessageSquare, Plus, Trash2, Send, ShoppingBag, 
-  X, Menu, ChevronRight, AlertCircle, ShoppingCart, Info, Check, ChevronDown 
+  X, Menu, ChevronRight, AlertCircle, ShoppingCart, Info, Check, ChevronDown,
+  Activity 
 } from 'lucide-react';
 import { useChatStore } from './store/chatStore';
 import { 
-  SuggestedPrompts, ProductCard, ComparisonView, BundleView, SearchContextBadge, SkeletonLoader, formatMessageText 
+  SuggestedPrompts, ProductCard, ComparisonView, BundleView, SearchContextBadge, SkeletonLoader, formatMessageText,
+  ComparisonPreviewCard 
 } from './components/ChatComponents';
 
 function App() {
@@ -19,6 +21,7 @@ function App() {
     createNewChat,
     deleteConversation,
     sendMessage,
+    addToCart,
     removeFromCart,
     updateCartQuantity,
     clearCart
@@ -29,6 +32,7 @@ function App() {
   const [isCartOpen, setIsCartOpen] = useState(false);
   const [checkoutSuccess, setCheckoutSuccess] = useState(false);
   const [comparedProducts, setComparedProducts] = useState([]);
+  const [activeComparison, setActiveComparison] = useState(null);
   const paginationLoading = useChatStore(state => state.paginationLoading);
   const loadMore = useChatStore(state => state.loadMore);
   
@@ -77,6 +81,20 @@ function App() {
       useChatStore.getState().setupStream(null);
     };
   }, [activeConversationId]);
+
+  // Automatically open new comparison drawer when it arrives in the chat
+  useEffect(() => {
+    if (activeConversation && activeConversation.messages.length > 0) {
+      const lastMessage = activeConversation.messages[activeConversation.messages.length - 1];
+      if (lastMessage && lastMessage.role === 'assistant') {
+        if (lastMessage.comparison) {
+          setActiveComparison(lastMessage.comparison);
+        } else if (lastMessage.comparisonTable) {
+          setActiveComparison(lastMessage.comparisonTable);
+        }
+      }
+    }
+  }, [activeConversation?.messages]);
 
   const handleSend = async (textToSend) => {
     const messageText = textToSend || input;
@@ -461,14 +479,20 @@ function App() {
                         {/* Interactive Comparison views table */}
                         {isBot && msg.comparison && (
                           <div className="mt-4 pt-2 border-t border-slate-800/50">
-                            <ComparisonView comparison={msg.comparison} />
+                            <ComparisonPreviewCard 
+                              comparison={msg.comparison} 
+                              onOpen={() => setActiveComparison(msg.comparison)} 
+                            />
                           </div>
                         )}
 
                         {/* Comparison Table from ShopMate */}
                         {isBot && msg.comparisonTable && (
                           <div className="mt-4 pt-2 border-t border-slate-800/50">
-                            <ComparisonView comparison={msg.comparisonTable} />
+                            <ComparisonPreviewCard 
+                              comparison={msg.comparisonTable} 
+                              onOpen={() => setActiveComparison(msg.comparisonTable)} 
+                            />
                           </div>
                         )}
                       </div>
@@ -677,6 +701,196 @@ function App() {
                   </button>
                 </div>
               )}
+            </motion.div>
+          </>
+        )}
+      </AnimatePresence>
+
+      {/* 6. SCREEN-SIZE COMPARISON POP UP PANEL */}
+      <AnimatePresence>
+        {activeComparison && (
+          <>
+            {/* Backdrop */}
+            <motion.div
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 0.7 }}
+              exit={{ opacity: 0 }}
+              onClick={() => setActiveComparison(null)}
+              className="fixed inset-0 bg-black/80 z-50 backdrop-blur-sm"
+            />
+
+            {/* Screen-size Panel */}
+            <motion.div
+              initial={{ x: '100%' }}
+              animate={{ x: 0 }}
+              exit={{ x: '100%' }}
+              transition={{ type: 'spring', damping: 26, stiffness: 170 }}
+              className="fixed top-0 right-0 h-full w-full bg-slate-950 border-l border-slate-800 z-50 flex flex-col shadow-2xl overflow-hidden"
+            >
+              {/* Header */}
+              <div className="p-5 border-b border-slate-800/80 bg-slate-900/50 backdrop-blur flex items-center justify-between">
+                <div className="flex items-center gap-3">
+                  <div className="w-10 h-10 rounded-xl bg-indigo-500/10 border border-indigo-500/30 flex items-center justify-center">
+                    <Activity className="w-5 h-5 text-brand-400" />
+                  </div>
+                  <div>
+                    <h3 className="font-bold text-white text-base">Product Comparison Matrix</h3>
+                    <p className="text-xs text-slate-400">Comparing technical specifications and AI evaluation</p>
+                  </div>
+                </div>
+                <button
+                  onClick={() => setActiveComparison(null)}
+                  className="p-2 rounded-xl text-slate-400 hover:text-white hover:bg-slate-800/60 border border-slate-800/80 cursor-pointer flex items-center gap-1.5 transition-all text-xs font-semibold"
+                >
+                  <X className="w-4.5 h-4.5" />
+                  <span>Close Matrix</span>
+                </button>
+              </div>
+
+              {/* Matrix Scroll Area */}
+              <div className="flex-grow overflow-y-auto p-6 md:p-8 space-y-8">
+                {/* Product Headers Block */}
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                  {/* Product 1 Info */}
+                  {activeComparison.products?.[0] && (
+                    <div className="relative p-5 rounded-2xl bg-gradient-to-br from-indigo-950/20 to-slate-900/40 border border-slate-800/80 flex flex-col sm:flex-row gap-4 items-start sm:items-center">
+                      <div className="absolute top-3 left-3 bg-brand-500/10 text-brand-400 border border-brand-500/20 text-[9px] font-bold px-2.5 py-0.5 rounded-full uppercase">
+                        Product A
+                      </div>
+                      {activeComparison.products[0].image_url || activeComparison.products[0].image ? (
+                        <img 
+                          src={activeComparison.products[0].image_url || activeComparison.products[0].image} 
+                          alt={activeComparison.products[0].name} 
+                          className="w-20 h-20 object-cover rounded-xl bg-slate-950 border border-slate-800/80 shrink-0"
+                          onError={(e) => {
+                            e.target.onerror = null;
+                            e.target.src = "data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='100' height='100'><rect width='100' height='100' fill='%23020617'/><text x='50%25' y='50%25' dominant-baseline='middle' text-anchor='middle' font-family='sans-serif' font-size='10' fill='%23475569'>No Photo</text></svg>";
+                          }}
+                        />
+                      ) : (
+                        <div className="w-20 h-20 rounded-xl bg-slate-950 border border-slate-800 flex items-center justify-center text-xs text-slate-700 shrink-0">
+                          No Photo
+                        </div>
+                      )}
+                      <div className="flex-grow pt-4 sm:pt-0">
+                        <span className="text-slate-400 text-[10px] uppercase font-bold tracking-wider">{activeComparison.products[0].brand || 'Brand'}</span>
+                        <h4 className="text-white font-extrabold text-base line-clamp-2 mt-0.5">{activeComparison.products[0].name}</h4>
+                        <div className="flex items-center gap-3 mt-2">
+                          <span className="text-brand-300 font-extrabold text-lg">₹{activeComparison.products[0].price?.toLocaleString('en-IN')}</span>
+                          {activeComparison.products[0].rating && (
+                            <span className="text-amber-400 font-bold text-xs bg-amber-500/10 border border-amber-500/20 px-2 py-0.5 rounded-full flex items-center gap-1">
+                              ★ {activeComparison.products[0].rating}
+                            </span>
+                          )}
+                        </div>
+                        <button
+                          onClick={() => addToCart(activeComparison.products[0])}
+                          className="mt-3 py-1.5 px-4 bg-brand-600 hover:bg-brand-500 text-white font-bold text-xs rounded-lg shadow-md cursor-pointer transition-colors flex items-center gap-1.5"
+                        >
+                          <ShoppingCart className="w-3.5 h-3.5" /> Add to Cart
+                        </button>
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Product 2 Info */}
+                  {activeComparison.products?.[1] && (
+                    <div className="relative p-5 rounded-2xl bg-gradient-to-br from-indigo-950/20 to-slate-900/40 border border-slate-800/80 flex flex-col sm:flex-row gap-4 items-start sm:items-center">
+                      <div className="absolute top-3 left-3 bg-indigo-500/10 text-indigo-400 border border-indigo-500/20 text-[9px] font-bold px-2.5 py-0.5 rounded-full uppercase">
+                        Product B
+                      </div>
+                      {activeComparison.products[1].image_url || activeComparison.products[1].image ? (
+                        <img 
+                          src={activeComparison.products[1].image_url || activeComparison.products[1].image} 
+                          alt={activeComparison.products[1].name} 
+                          className="w-20 h-20 object-cover rounded-xl bg-slate-950 border border-slate-800/80 shrink-0"
+                          onError={(e) => {
+                            e.target.onerror = null;
+                            e.target.src = "data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='100' height='100'><rect width='100' height='100' fill='%23020617'/><text x='50%25' y='50%25' dominant-baseline='middle' text-anchor='middle' font-family='sans-serif' font-size='10' fill='%23475569'>No Photo</text></svg>";
+                          }}
+                        />
+                      ) : (
+                        <div className="w-20 h-20 rounded-xl bg-slate-950 border border-slate-800 flex items-center justify-center text-xs text-slate-700 shrink-0">
+                          No Photo
+                        </div>
+                      )}
+                      <div className="flex-grow pt-4 sm:pt-0">
+                        <span className="text-slate-400 text-[10px] uppercase font-bold tracking-wider">{activeComparison.products[1].brand || 'Brand'}</span>
+                        <h4 className="text-white font-extrabold text-base line-clamp-2 mt-0.5">{activeComparison.products[1].name}</h4>
+                        <div className="flex items-center gap-3 mt-2">
+                          <span className="text-brand-300 font-extrabold text-lg">₹{activeComparison.products[1].price?.toLocaleString('en-IN')}</span>
+                          {activeComparison.products[1].rating && (
+                            <span className="text-amber-400 font-bold text-xs bg-amber-500/10 border border-amber-500/20 px-2 py-0.5 rounded-full flex items-center gap-1">
+                              ★ {activeComparison.products[1].rating}
+                            </span>
+                          )}
+                        </div>
+                        <button
+                          onClick={() => addToCart(activeComparison.products[1])}
+                          className="mt-3 py-1.5 px-4 bg-brand-600 hover:bg-brand-500 text-white font-bold text-xs rounded-lg shadow-md cursor-pointer transition-colors flex items-center gap-1.5"
+                        >
+                          <ShoppingCart className="w-3.5 h-3.5" /> Add to Cart
+                        </button>
+                      </div>
+                    </div>
+                  )}
+                </div>
+
+                {/* AI Overview Text Callout */}
+                {activeComparison.overview && (
+                  <div className="p-5 rounded-2xl bg-indigo-950/20 border border-indigo-500/20 shadow-inner">
+                    <div className="flex items-center gap-2 mb-3">
+                      <Sparkles className="w-5 h-5 text-indigo-400" />
+                      <h4 className="font-bold text-white text-sm">AI Strategic Overview</h4>
+                    </div>
+                    <p className="text-slate-200 text-xs md:text-sm leading-relaxed font-light">
+                      {activeComparison.overview}
+                    </p>
+                  </div>
+                )}
+
+                {/* Specs Table Matrix */}
+                <div className="border border-slate-800 rounded-2xl overflow-hidden bg-slate-900/20">
+                  <div className="bg-slate-900/50 p-4 border-b border-slate-800 flex items-center justify-between">
+                    <span className="text-xs font-bold text-white uppercase tracking-wider">Specifications Comparison Matrix</span>
+                    <span className="text-[10px] text-brand-400 px-2.5 py-0.5 rounded-full bg-brand-400/10 border border-brand-400/20 font-semibold">Side-by-Side</span>
+                  </div>
+                  <div className="overflow-x-auto">
+                    <table className="w-full text-left text-xs md:text-sm border-collapse">
+                      <thead>
+                        <tr className="border-b border-slate-800 bg-slate-950/40">
+                          <th className="p-4 text-slate-400 font-semibold w-1/4">Specification</th>
+                          <th className="p-4 border-l border-slate-800 text-white font-bold w-3/8 bg-indigo-950/5">
+                            {activeComparison.products?.[0]?.brand} {activeComparison.products?.[0]?.name}
+                          </th>
+                          <th className="p-4 border-l border-slate-800 text-white font-bold w-3/8 bg-indigo-950/5">
+                            {activeComparison.products?.[1]?.brand} {activeComparison.products?.[1]?.name}
+                          </th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        <tr className="border-b border-slate-800 hover:bg-slate-800/20">
+                          <td className="p-4 text-slate-400 font-medium">Price</td>
+                          <td className="p-4 border-l border-slate-800 text-brand-300 font-bold text-base">₹{activeComparison.products?.[0]?.price?.toLocaleString('en-IN')}</td>
+                          <td className="p-4 border-l border-slate-800 text-brand-300 font-bold text-base">₹{activeComparison.products?.[1]?.price?.toLocaleString('en-IN')}</td>
+                        </tr>
+                        <tr className="border-b border-slate-800 hover:bg-slate-800/20">
+                          <td className="p-4 text-slate-400 font-medium">Rating</td>
+                          <td className="p-4 border-l border-slate-800 text-amber-400 font-semibold">{activeComparison.products?.[0]?.rating ? `★ ${activeComparison.products[0].rating}` : 'N/A'}</td>
+                          <td className="p-4 border-l border-slate-800 text-amber-400 font-semibold">{activeComparison.products?.[1]?.rating ? `★ ${activeComparison.products[1].rating}` : 'N/A'}</td>
+                        </tr>
+                        {(activeComparison.specs || []).map((row, idx) => (
+                          <tr key={idx} className="border-b border-slate-800 hover:bg-slate-800/20 last:border-0">
+                            <td className="p-4 text-slate-400 font-medium">{row.feature}</td>
+                            <td className="p-4 border-l border-slate-800 text-slate-300 font-light leading-relaxed">{row.val1 || 'N/A'}</td>
+                            <td className="p-4 border-l border-slate-800 text-slate-300 font-light leading-relaxed">{row.val2 || 'N/A'}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              </div>
             </motion.div>
           </>
         )}
