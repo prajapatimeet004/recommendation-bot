@@ -9,6 +9,7 @@ from backend.schemas import ChatRequest, ChatResponse, SearchContext
 from backend.recommender import process_query
 from backend.routers.chat import router as chat_router
 from backend.routers.search import router as search_router
+from backend.routers.llm_status import router as llm_status_router
 
 load_dotenv()
 
@@ -31,6 +32,7 @@ app.add_middleware(
 
 app.include_router(chat_router)
 app.include_router(search_router)
+app.include_router(llm_status_router)
 
 
 @app.get("/")

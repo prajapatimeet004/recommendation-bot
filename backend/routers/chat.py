@@ -43,6 +43,23 @@ class ConnectionManager:
 
 manager = ConnectionManager()
 
+def _get_combined_query(request: ChatRequest) -> str:
+    """Reconstruct the full query if the current message is answering a clarification question."""
+    query = request.message
+    history = request.history
+    if history and len(history) >= 3:
+        current_user_msg = history[-1]
+        last_assistant_msg = history[-2]
+        prev_user_msg = history[-3]
+        if (
+            current_user_msg.role == "user"
+            and last_assistant_msg.role == "assistant"
+            and last_assistant_msg.response_type == "NEEDS_CLARIFICATION"
+            and prev_user_msg.role == "user"
+        ):
+            query = f"{prev_user_msg.content} {query}"
+    return query
+
 
 @router.get("/chat/stream/{session_id}")
 async def chat_stream(session_id: str):
@@ -86,14 +103,16 @@ async def chat_endpoint(
         clarification_question = result.get("clarification_question")
         clarification_options = result.get("clarification_options", [])
         generated_response = result.get("generated_response")
+        comparison = result.get("comparison")
 
         # Automatically start the background product discovery task
         if intent in ("RECOMMEND", "COMPARE", "FOLLOW_UP", "BUNDLE") and request.activeChatId and result.get("run_background_discovery", True):
             from backend.services.discovery_task import discover_and_update_products_task
+            combined_query = _get_combined_query(request)
             background_tasks.add_task(
                 discover_and_update_products_task,
                 session_id=request.activeChatId,
-                query=request.message,
+                query=combined_query,
                 intent=detailed_intent
             )
 
@@ -110,6 +129,7 @@ async def chat_endpoint(
             clarification_question=clarification_question,
             clarification_options=clarification_options,
             generated_response=generated_response,
+            comparison=comparison,
         )
 
     except Exception as exc:
@@ -124,7 +144,8 @@ async def _handle_pagination(request: ChatRequest, page_token: str, background_t
         offset = 0
 
     session_id = request.activeChatId or ""
-    query = request.message
+    # Use the combined context-aware query for pagination
+    query = _get_combined_query(request)
 
     # Trigger background search on Apify for pagination
     if session_id:
@@ -191,6 +212,7 @@ def _build_response(
     clarification_question: Optional[str] = None,
     clarification_options: Optional[List[str]] = None,
     generated_response: Optional[str] = None,
+    comparison: Optional[Dict[str, Any]] = None,
 ) -> ChatResponse:
     import hashlib
     query_hash = hashlib.md5(message.strip().lower().encode()).hexdigest()[:8]
@@ -218,6 +240,7 @@ def _build_response(
             query_hash=query_hash,
         ),
         products=product_outputs if product_outputs else None,
+        comparison=comparison,
         pagination_token=str(len(product_outputs)) if more_available else None,
         total_products=len(product_outputs),
         follow_up_questions=follow_ups,

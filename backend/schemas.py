@@ -3,7 +3,7 @@ from __future__ import annotations
 from enum import Enum
 from typing import Any, Dict, List, Optional
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from backend.models.product import ProductOutput, ExtractedProduct
 
@@ -34,8 +34,8 @@ class Message(BaseModel):
     timestamp: str
     products: Optional[List[Any]] = None
     comparison: Optional[Dict[str, Any]] = None
-    response_type: Optional[str] = None
-    search_context: Optional[Any] = None
+    response_type: Optional[str] = Field(default=None, alias="responseType")
+    search_context: Optional[Any] = Field(default=None, alias="searchContext")
     bundle: Optional[Dict[str, Any]] = None
 
 

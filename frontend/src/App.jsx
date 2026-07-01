@@ -58,6 +58,16 @@ function App() {
     return () => window.removeEventListener('resize', handleResize);
   }, []);
 
+  // Ensure a fresh new chat on startup if the last active chat has history.
+  // This satisfies the requirement to start a fresh chat when the server/app is started,
+  // while keeping the previous chat saved in the sidebar history.
+  useEffect(() => {
+    if (activeConversation && activeConversation.messages.length > 1) {
+      createNewChat();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   // Set up Server-Sent Events (SSE) stream for real-time product discovery
   useEffect(() => {
     if (activeConversationId) {
@@ -182,10 +192,10 @@ function App() {
                   return (
                     <div
                       key={chat.id}
-                      className={`group relative flex items-center rounded-xl transition-all duration-200 ${
+                      className={`group relative flex items-center rounded-xl transition-all duration-300 mb-1.5 ${
                         isActive 
-                          ? 'bg-brand-500/10 border border-brand-500/30 text-white font-medium shadow-md shadow-brand-500/5' 
-                          : 'border border-transparent hover:bg-slate-800/45 text-slate-400 hover:text-slate-200'
+                          ? 'bg-indigo-500/15 border border-indigo-400/40 text-white font-semibold shadow-[0_0_20px_rgba(99,102,241,0.15)]' 
+                          : 'border border-transparent hover:bg-slate-800/45 text-slate-400 hover:text-slate-200 hover:border-slate-700/50'
                       }`}
                     >
                       <button
@@ -369,11 +379,11 @@ function App() {
                     )}
 
                     {/* Text Container bubble */}
-                    <div className="flex flex-col gap-1.5">
-                      <div className={`p-4 rounded-2xl ${
+                    <div className="flex flex-col gap-1.5 w-full">
+                      <div className={`p-5 rounded-3xl ${
                         isBot 
-                          ? 'glass-card bg-slate-800/25 border-l-2 border-brand-500' 
-                          : 'bg-indigo-600/10 border border-brand-500/20 text-slate-100 rounded-tr-none'
+                          ? 'glass-card bg-slate-800/40 border border-slate-700/50 shadow-[0_8px_30px_-4px_rgba(0,0,0,0.4)]' 
+                          : 'bg-gradient-to-br from-indigo-600/20 to-violet-600/10 border border-indigo-500/30 text-slate-100 rounded-tr-sm shadow-[0_4px_20px_-4px_rgba(99,102,241,0.15)]'
                       }`}>
                         {/* Render textual content */}
                         <div className="text-sm font-light space-y-1 font-sans">
@@ -597,7 +607,7 @@ function App() {
                           className="w-16 h-16 object-cover rounded-lg bg-slate-950 border border-slate-800 flex-shrink-0"
                           onError={(e) => {
                             e.target.onerror = null;
-                            e.target.src = "https://images.unsplash.com/photo-1505740420928-5e560c06d30e?w=500";
+                            e.target.src = "data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='100' height='100'><rect width='100' height='100' fill='%23020617'/><text x='50%25' y='50%25' dominant-baseline='middle' text-anchor='middle' font-family='sans-serif' font-size='10' fill='%23475569'>No Photo</text></svg>";
                           }}
                         />
                       ) : (

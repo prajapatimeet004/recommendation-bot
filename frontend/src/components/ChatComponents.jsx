@@ -134,7 +134,7 @@ export const SuggestedPrompts = ({ onSelect }) => {
   );
 };
 
-export const ProductCard = ({ product, onCompareToggle, isCompared }) => {
+export const ProductCard = ({ product, onCompareToggle, isCompared, index = 0 }) => {
   const addToCart = useChatStore(state => state.addToCart);
   const [showSpecs, setShowSpecs] = useState(false);
   const [added, setAdded] = useState(false);
@@ -162,13 +162,19 @@ export const ProductCard = ({ product, onCompareToggle, isCompared }) => {
   const srcColor = sourceColors[product.source] || { bg: 'bg-slate-500/10', text: 'text-slate-400', border: 'border-slate-500/30' };
 
   return (
-    <div className="flex flex-col rounded-xl overflow-hidden glass-card h-full border border-slate-700/50 hover:border-indigo-500/40 hover:shadow-lg hover:shadow-indigo-950/40 transition-all duration-300 group">
-      <div className="relative h-44 overflow-hidden bg-slate-900 border-b border-slate-800">
+    <motion.div 
+      initial={{ opacity: 0, y: 20 }}
+      animate={{ opacity: 1, y: 0 }}
+      transition={{ duration: 0.4, delay: index * 0.05, ease: "easeOut" }}
+      className="flex flex-col rounded-2xl overflow-hidden glass-card h-full border border-slate-700/50 hover:border-indigo-400/50 transition-all duration-300 group bg-slate-900/40 relative"
+    >
+      {/* 4:5 aspect ratio image container */}
+      <div className="relative aspect-[4/5] overflow-hidden bg-slate-950 border-b border-slate-800 shrink-0">
         {product.image_url && !imgError ? (
           <img
             src={product.image_url}
             alt={product.name}
-            className="w-full h-full object-cover transition-transform duration-500 group-hover:scale-110"
+            className="w-full h-full object-cover transition-transform duration-700 ease-out group-hover:scale-105"
             loading="lazy"
             onError={() => setImgError(true)}
           />
@@ -178,153 +184,92 @@ export const ProductCard = ({ product, onCompareToggle, isCompared }) => {
             <span>🛍️ No Image Available</span>
           </div>
         )}
+        
+        {/* Gradient Overlay for depth */}
+        <div className="absolute inset-0 bg-gradient-to-t from-slate-950/90 via-slate-900/20 to-transparent opacity-60 group-hover:opacity-40 transition-opacity duration-500 pointer-events-none"></div>
+
+        {/* Brand Tag Top Right */}
+        {product.source && (
+          <div className="absolute top-3 right-3 z-10">
+             <span className={`text-[9px] font-bold px-2 py-1 rounded-full border bg-slate-950/40 backdrop-blur-md ${srcColor.text} ${srcColor.border}`}>
+               {product.source}
+             </span>
+          </div>
+        )}
+
         {/* Top-left: Similarity Score */}
-        <div className="absolute top-2 left-2 flex gap-1">
+        <div className="absolute top-3 left-3 flex gap-1 z-10">
           {simScore != null && (
-            <div className="bg-indigo-950/80 backdrop-blur-md border border-indigo-500/30 px-2 py-1 rounded-lg text-[10px] font-semibold text-indigo-300">
+            <div className="bg-gradient-to-r from-indigo-600/80 to-violet-600/80 backdrop-blur-md border border-indigo-400/50 px-2.5 py-1 rounded-full text-[10px] font-semibold text-white shadow-lg shadow-indigo-900/50">
               {simScore >= 90 ? 'Excellent' : simScore >= 80 ? 'Great' : 'Good'} Match
             </div>
           )}
         </div>
-        {/* Top-right: Discount badge */}
+        
+        {/* Bottom-left: Discount badge */}
         {hasDiscount && (
-          <div className="absolute top-2 right-2 bg-rose-600/90 backdrop-blur-md border border-rose-400/50 px-2 py-1 rounded-lg text-[10px] font-bold text-white flex items-center gap-1">
+          <div className="absolute bottom-3 left-3 bg-gradient-to-r from-amber-500/90 to-orange-500/90 backdrop-blur-md border border-amber-300/50 px-2.5 py-1 rounded-full text-[10px] font-bold text-white flex items-center gap-1 shadow-lg shadow-amber-900/50 z-10">
             <Percent className="w-3 h-3" />
             {product.discount}% OFF
           </div>
         )}
       </div>
 
-      <div className="p-4 flex flex-col flex-grow">
-        {/* Brand + Source badge */}
-        <div className="flex justify-between items-center mb-1.5">
-          {product.brand && (
-            <span className="text-[10px] font-semibold text-slate-400 uppercase tracking-wider">{product.brand}</span>
-          )}
-          <span className={`text-[9px] font-semibold px-1.5 py-0.5 rounded-full ${srcColor.bg} ${srcColor.text} ${srcColor.border} border`}>
-            {product.source || 'Online Store'}
-          </span>
-        </div>
+      <div className="p-5 flex flex-col flex-grow relative bg-slate-900/40">
+        {/* Brand Name */}
+        {product.brand && (
+          <span className="text-[10px] font-semibold text-slate-400 uppercase tracking-wider mb-1 block">{product.brand}</span>
+        )}
 
-        {/* Product Name */}
-        <h4 className="font-semibold text-white text-sm line-clamp-2 mb-1.5" title={product.name}>
+        {/* Product Name (Editorial Font) */}
+        <h4 className="font-editorial font-semibold text-white text-lg leading-tight line-clamp-2 mb-2" title={product.name}>
           {product.name}
         </h4>
 
         {/* Rating */}
         {product.rating != null && product.rating > 0 && (
-          <div className="flex items-center text-amber-400 text-xs mb-2">
-            <Star className="w-3.5 h-3.5 fill-current mr-0.5" />
-            <span className="font-medium">{product.rating}</span>
-            <span className="text-slate-500 ml-1">/ 5</span>
+          <div className="flex items-center text-amber-400 text-xs mb-3">
+            <Star className="w-3.5 h-3.5 fill-current mr-1" />
+            <span className="font-semibold">{product.rating}</span>
+            <span className="text-slate-500 ml-1 text-[10px]">/ 5</span>
           </div>
         )}
 
-        {/* Quick Specs Pills */}
-        {product.specifications && Object.keys(product.specifications).length > 0 && (
-          <div className="flex flex-wrap gap-1 mb-2.5">
-            {Object.entries(product.specifications).slice(0, 3).map(([key, val]) => (
-              <span key={key} className="text-[10px] font-medium bg-slate-800/60 border border-slate-700/30 text-indigo-300 px-2 py-0.5 rounded-full capitalize">
-                {key.replace('_', ' ')}: {val}
-              </span>
-            ))}
-          </div>
-        )}
-
-        {/* Price + MRP + Discount */}
-        <div className="flex items-baseline gap-2 mb-2">
+        {/* Price + MRP */}
+        <div className="flex items-baseline gap-2 mb-4">
           {product.price != null && (
             <span className="text-xl font-bold text-white">
               ₹{Number(product.price).toLocaleString('en-IN')}
             </span>
           )}
           {hasMrp && product.price != null && product.mrp > product.price && (
-            <span className="text-xs text-slate-500 line-through">
+            <span className="text-xs text-slate-500 line-through font-medium">
               ₹{Number(product.mrp).toLocaleString('en-IN')}
-            </span>
-          )}
-          {hasDiscount && (
-            <span className="text-[10px] font-semibold text-emerald-400 bg-emerald-500/10 px-1.5 py-0.5 rounded">
-              Save {product.discount}%
             </span>
           )}
         </div>
 
-        {/* Description */}
-        {product.description && (
-          <p className="text-xs text-slate-400 mb-3 line-clamp-2 leading-relaxed">
-            {product.description}
-          </p>
-        )}
-
-        {/* Specs Toggle */}
+        {/* Quick Specs Chips */}
         {product.specifications && Object.keys(product.specifications).length > 0 && (
-          <>
-            <button
-              onClick={() => setShowSpecs(!showSpecs)}
-              className="flex items-center justify-between w-full text-xs text-slate-400 bg-slate-800/40 hover:bg-slate-800/80 hover:text-slate-200 border border-slate-700/50 py-1.5 px-2.5 rounded-lg mb-3 transition-colors cursor-pointer"
-            >
-              <span className="font-medium">Specifications</span>
-              {showSpecs ? <ChevronUp className="w-3.5 h-3.5" /> : <ChevronDown className="w-3.5 h-3.5" />}
-            </button>
-
-            <AnimatePresence>
-              {showSpecs && (
-                <motion.div
-                  initial={{ height: 0, opacity: 0 }}
-                  animate={{ height: 'auto', opacity: 1 }}
-                  exit={{ height: 0, opacity: 0 }}
-                  className="overflow-hidden mb-3 border border-slate-800 rounded-lg bg-slate-900/60 text-[11px]"
-                >
-                  <div className="p-2 space-y-1">
-                    {Object.entries(product.specifications).map(([key, val], idx) => (
-                      <div key={`${key}-${idx}`} className="flex justify-between border-b border-slate-800/40 pb-1 last:border-0 last:pb-0">
-                        <span className="text-slate-500 font-medium mr-2 capitalize">{key}</span>
-                        <span className="text-slate-300 text-right font-light">{val}</span>
-                      </div>
-                    ))}
-                  </div>
-                </motion.div>
-              )}
-            </AnimatePresence>
-          </>
+          <div className="flex flex-wrap gap-1.5 mb-4">
+            {Object.entries(product.specifications).slice(0, 3).map(([key, val]) => (
+              <span key={key} className="flex items-center gap-1 text-[10px] font-medium bg-slate-800/80 border border-slate-700/50 text-slate-300 px-2.5 py-1 rounded-md capitalize">
+                <Tag className="w-2.5 h-2.5 text-slate-500" />
+                {val}
+              </span>
+            ))}
+          </div>
         )}
 
-        {/* Action Buttons */}
-        <div className="flex gap-2 mt-auto">
-          {onCompareToggle && (
-            <button
-              onClick={() => onCompareToggle(product)}
-              className={`px-3 py-2 text-xs font-medium rounded-lg border flex items-center gap-1 cursor-pointer transition-colors ${
-                isCompared
-                  ? 'bg-indigo-500/20 border-indigo-500 text-brand-300'
-                  : 'border-slate-700 text-slate-400 hover:text-slate-200 hover:bg-slate-800/50'
-              }`}
-            >
-              {isCompared ? <Check className="w-3.5 h-3.5" /> : null}
-              {isCompared ? 'Comparing' : 'Compare'}
-            </button>
-          )}
-
-          {/* Buy Now button */}
-          {product.product_url && (
-            <a
-              href={product.product_url}
-              target="_blank"
-              rel="noopener noreferrer"
-              className="px-2.5 py-2 text-xs font-semibold rounded-lg border border-emerald-700/50 text-emerald-400 hover:bg-emerald-500/10 hover:text-emerald-300 flex items-center gap-1 cursor-pointer transition-colors"
-            >
-              <ExternalLink className="w-3.5 h-3.5" />
-              <span>Buy on {product.source ? product.source.split('.')[0].charAt(0).toUpperCase() + product.source.split('.')[0].slice(1) : 'Store'}</span>
-            </a>
-          )}
-
+        {/* Action Buttons Container */}
+        <div className="flex gap-2 mt-auto pt-2">
+          {/* Quick Add to Cart */}
           <button
             onClick={handleAddToCart}
-            className={`flex-grow py-2 px-3 text-xs font-semibold rounded-lg flex items-center justify-center gap-1.5 cursor-pointer shadow-lg transition-all ${
+            className={`flex-grow py-2.5 px-3 text-xs font-bold rounded-xl flex items-center justify-center gap-2 cursor-pointer transition-all duration-300 ${
               added
-                ? 'bg-emerald-600 text-white shadow-emerald-950/20'
-                : 'bg-brand-600 hover:bg-brand-500 text-white shadow-indigo-950/30'
+                ? 'bg-emerald-500 text-white shadow-lg shadow-emerald-900/30'
+                : 'bg-white text-slate-900 hover:bg-slate-200 shadow-lg shadow-white/10 opacity-90 group-hover:opacity-100'
             }`}
           >
             {added ? (
@@ -334,34 +279,40 @@ export const ProductCard = ({ product, onCompareToggle, isCompared }) => {
               </>
             ) : (
               <>
-                <ShoppingCart className="w-4 h-4" />
-                <span>Add to Cart</span>
+                <ShoppingBag className="w-4 h-4" />
+                <span>Add to Bag</span>
               </>
             )}
           </button>
-        </div>
+          
+          {onCompareToggle && (
+            <button
+              onClick={() => onCompareToggle(product)}
+              className={`p-2.5 rounded-xl border flex items-center justify-center cursor-pointer transition-colors ${
+                isCompared
+                  ? 'bg-indigo-500/20 border-indigo-500 text-indigo-300'
+                  : 'border-slate-700 text-slate-400 hover:text-slate-200 hover:bg-slate-800'
+              }`}
+              title="Compare"
+            >
+              <Activity className="w-4 h-4" />
+            </button>
+          )}
 
-        {/* Similarity score bar */}
-        {simScore != null && (
-          <div className="mt-2 pt-2 border-t border-slate-800/40">
-            <div className="flex items-center justify-between text-[9px] text-slate-500 mb-1">
-              <span>Match Score</span>
-              <span className={simScore >= 80 ? 'text-emerald-400 font-semibold' : simScore >= 60 ? 'text-amber-400 font-semibold' : 'text-slate-400'}>
-                {simScore}%
-              </span>
-            </div>
-            <div className="w-full h-1.5 bg-slate-800 rounded-full overflow-hidden">
-              <div
-                className={`h-full rounded-full transition-all duration-500 ${
-                  simScore >= 80 ? 'bg-emerald-500' : simScore >= 60 ? 'bg-amber-500' : 'bg-slate-500'
-                }`}
-                style={{ width: `${Math.min(simScore, 100)}%` }}
-              />
-            </div>
-          </div>
-        )}
+          {product.product_url && (
+            <a
+              href={product.product_url}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="p-2.5 rounded-xl border border-slate-700 text-slate-400 hover:text-slate-200 hover:bg-slate-800 flex items-center justify-center transition-colors"
+              title="View on Store"
+            >
+              <ExternalLink className="w-4 h-4" />
+            </a>
+          )}
+        </div>
       </div>
-    </div>
+    </motion.div>
   );
 };
 
@@ -437,6 +388,18 @@ export const ComparisonView = ({ comparison }) => {
           </tbody>
         </table>
       </div>
+
+      {comparison.overview && (
+        <div className="bg-indigo-950/30 p-4 border-t border-slate-700/60">
+          <div className="flex items-center gap-2 mb-2">
+            <Sparkles className="w-4 h-4 text-indigo-400" />
+            <h5 className="font-semibold text-white text-sm">AI Overview</h5>
+          </div>
+          <div className="text-slate-300 text-xs leading-relaxed">
+            {formatMessageText(comparison.overview)}
+          </div>
+        </div>
+      )}
     </div>
   );
 };
@@ -467,7 +430,7 @@ export const BundleView = ({ bundle }) => {
                 className="w-14 h-14 object-cover rounded-lg bg-slate-950 border border-slate-800 flex-shrink-0"
                 onError={(e) => {
                   e.target.onerror = null;
-                  e.target.src = "https://images.unsplash.com/photo-1505740420928-5e560c06d30e?w=500";
+                  e.target.src = "data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='100' height='100'><rect width='100' height='100' fill='%23020617'/><text x='50%25' y='50%25' dominant-baseline='middle' text-anchor='middle' font-family='sans-serif' font-size='10' fill='%23475569'>No Photo</text></svg>";
                 }}
               />
             )}

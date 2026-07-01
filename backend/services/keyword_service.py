@@ -65,13 +65,18 @@ Return ONLY valid JSON. No markdown, no explanation."""
 
 _DETAILED_INTENT_PROMPT_WITH_CONTEXT = """\
 You are an advanced shopping intent parser for an e-commerce assistant.
+You MUST return ONLY a valid JSON object. No conversational text, no explanations, no markdown fences.
 
 ## Conversation History
-Below is the recent conversation history. Use it to understand references like "that product", "accessories for it", "show me more like this", etc.
+Use this history to understand references (e.g., "that product", "accessories for it").
+<history>
 {conversation_context}
+</history>
 
 ## Current Message
+<message>
 {user_message}
+</message>
 
 ## Task
 Analyze the user's CURRENT MESSAGE in the context of the conversation history above.
@@ -83,17 +88,15 @@ Return a valid JSON object with the following fields:
 5. `occasion` — usage occasion (e.g., Goa trip, gym, wedding, office, daily, or null)
 6. `style` — style profile (e.g. oversized, casual, formal, traditional, sporty, or null)
 7. `brand_preference` — list of preferred brands mentioned (e.g., ["Apple", "Samsung"] or empty list [])
-8. `keywords` — list of approximately 10 optimized search keywords (INCLUDE context from history — e.g. if user previously searched for "Samsung tablet" and now asks for "accessories", keywords should include "Samsung tablet accessories", "Samsung Tab case", etc.)
+8. `keywords` — list of approx 10 optimized search keywords (INCLUDE context from history)
 9. `search_queries` — list of 5 to 10 optimized shopping search query phrases
 
-Return ONLY a valid JSON object. Do not include markdown formatting or extra text.
-
 Example with context:
-Conversation History:
+<history>
 User: I need a good Samsung tablet for drawing
 Assistant: Here are some great Samsung tablets...
-
-Current Message: Show me accessories for that
+</history>
+<message>Show me accessories for that</message>
 
 Expected Response:
 {{
@@ -104,13 +107,15 @@ Expected Response:
   "occasion": null,
   "style": null,
   "brand_preference": ["Samsung"],
-  "keywords": ["Samsung tablet accessories", "Samsung Tab S9 case", "Galaxy Tab pen", "Samsung tablet cover", "Samsung Tab screen protector", "Samsung tablet keyboard case", "Samsung Tab S9 FE accessories", "Samsung Tab drawing accessories", "Samsung tablet stand", "Samsung tablet charger"],
-  "search_queries": ["Samsung tablet accessories", "Samsung Tab S9 case cover", "Galaxy Tab S9 FE accessories", "Samsung tablet pen stylus", "Samsung tablet keyboard case"]
+  "keywords": ["Samsung tablet accessories", "Samsung Tab S9 case", "Galaxy Tab pen", "Samsung tablet cover"],
+  "search_queries": ["Samsung tablet accessories", "Samsung Tab S9 case cover", "Galaxy Tab S9 FE accessories"]
 }}
 """
 
 _DETAILED_INTENT_PROMPT = """\
 You are an advanced shopping intent parser for an e-commerce assistant.
+You MUST return ONLY a valid JSON object. No conversational text, no explanations, no markdown fences.
+
 Analyze the user's shopping query and return a valid JSON object with the following fields:
 1. `intent` — one of: RECOMMEND, COMPARE, FOLLOW_UP, BUNDLE, GENERAL, EXPLAIN, GREETING
 2. `category` — canonical category: smartphones, laptops, fashion, beauty, footwear, home_appliances, electronics, or other
@@ -120,29 +125,20 @@ Analyze the user's shopping query and return a valid JSON object with the follow
 6. `style` — style profile (e.g. oversized, casual, formal, traditional, sporty, or null)
 7. `brand_preference` — list of preferred brands mentioned (e.g., ["Apple", "Samsung"] or empty list [])
 8. `keywords` — list of approximately 10 optimized search keywords
-9. `search_queries` — list of 5 to 10 optimized shopping search query phrases (e.g., "Best smartphone under ₹30000", "Camera phone under ₹30000", etc.)
-
-Return ONLY a valid JSON object. Do not include markdown formatting or extra text.
+9. `search_queries` — list of 5 to 10 optimized shopping search query phrases (e.g., "Best smartphone under ₹30000")
 
 Example query: "I want a phone under ₹30,000"
-Example response:
+Expected response:
 {
+  "intent": "RECOMMEND",
   "category": "smartphones",
   "subcategory": "mobile_phones",
   "budget": 30000,
   "occasion": null,
   "style": null,
   "brand_preference": [],
-  "keywords": ["smartphones under 30000", "best budget phone", "30k smartphone", "5G phone under 30k", "gaming phone under 30k", "camera phone under 30k"],
-  "search_queries": [
-    "Best smartphone under ₹30000",
-    "Camera phone under ₹30000",
-    "Gaming phone under ₹30000",
-    "5G phone under ₹30000",
-    "Smartphone under ₹30000 Amazon",
-    "Smartphone under ₹30000 Flipkart",
-    "Smartphone under ₹30000 Croma"
-  ]
+  "keywords": ["smartphones under 30000", "best budget phone", "30k smartphone", "5G phone under 30k"],
+  "search_queries": ["Best smartphone under ₹30000", "Camera phone under ₹30000"]
 }
 """
 
@@ -184,6 +180,23 @@ class KeywordService:
                 return {"intent": intent, "keywords": keywords[:12], "category": category}
             except (json.JSONDecodeError, KeyError) as exc:
                 plog.warning("  -> LLM JSON parse failed: %s -- raw=%s", exc, raw[:200])
+
+        # Local semantic intent classifier fallback
+        try:
+            from backend.services.local_intent_classifier import LocalIntentClassifier
+            pred = LocalIntentClassifier.instance().classify(user_message)
+            if pred:
+                fallback_intent = self._fallback_intent(user_message)
+                if fallback_intent in ("COMPARE", "GREETING", "BUNDLE", "FOLLOW_UP"):
+                    intent = fallback_intent
+                else:
+                    intent = pred.get("intent", "RECOMMEND")
+                category = pred.get("category", "other")
+                keywords = self._fallback_keywords(user_message)
+                plog.info("  -> Local semantic intent classification fallback (analyze): intent=%s | category=%s", intent, category)
+                return {"intent": intent, "keywords": keywords[:12], "category": category}
+        except Exception as exc:
+            plog.warning("  -> Local semantic fallback failed in analyze: %s", exc)
 
         fallback_intent = self._fallback_intent(user_message)
         fallback_keywords = self._fallback_keywords(user_message)
@@ -338,6 +351,65 @@ class KeywordService:
             except Exception as exc:
                 plog.warning("  -> LLM detailed intent parse failed: %s -- raw=%s", exc, raw[:200])
 
+        # Local semantic intent classifier fallback
+        try:
+            from backend.services.local_intent_classifier import LocalIntentClassifier
+            pred = LocalIntentClassifier.instance().classify(user_message)
+            if pred:
+                fallback_intent = self._fallback_intent(user_message)
+                if fallback_intent in ("COMPARE", "GREETING", "BUNDLE", "FOLLOW_UP"):
+                    intent = fallback_intent
+                else:
+                    intent = pred.get("intent", "RECOMMEND")
+                category = pred.get("category", "other")
+                
+                budget = parse_budget(user_message)
+                low = user_message.lower()
+                occasion = None
+                for occ in ["goa", "trip", "wedding", "office", "gym", "school", "sports", "travel", "summer", "navratri", "navaratri", "diwali", "festive", "ethnic", "party"]:
+                    if occ in low:
+                        occasion = occ.capitalize()
+                        break
+                        
+                style = None
+                for st in ["oversized", "casual", "formal", "traditional", "sporty", "printed", "graphic"]:
+                    if st in low:
+                        style = st.capitalize()
+                        break
+
+                brands = []
+                common_brands = [
+                    "samsung", "apple", "xiaomi", "redmi", "oneplus", "oppo", "vivo", "realme", "nothing",
+                    "motorola", "poco", "lenovo", "asus", "dell", "hp", "acer", "sony", "nike", "adidas",
+                    "puma", "reebok"
+                ]
+                for brand in common_brands:
+                    if re.search(rf"\b{brand}\b", low):
+                        brands.append(brand.capitalize())
+                
+                keywords = self._fallback_keywords(user_message)
+                search_queries = [
+                    f"Best {category} {user_message}",
+                    f"{user_message} online",
+                    f"{user_message} amazon",
+                    f"{user_message} flipkart",
+                ]
+                
+                plog.info("  -> Local semantic intent classification fallback (detailed): intent=%s | category=%s", intent, category)
+                return {
+                    "intent": intent,
+                    "category": category,
+                    "subcategory": f"{category}_general",
+                    "budget": budget,
+                    "occasion": occasion,
+                    "style": style,
+                    "brand_preference": brands,
+                    "keywords": keywords[:10],
+                    "search_queries": search_queries[:6]
+                }
+        except Exception as exc:
+            plog.warning("  -> Local semantic fallback failed in detailed intent: %s", exc)
+
         return self._fallback_detailed_intent(user_message)
 
     def _fallback_detailed_intent(self, user_message: str) -> Dict[str, Any]:
@@ -346,7 +418,7 @@ class KeywordService:
         
         low = user_message.lower()
         occasion = None
-        for occ in ["goa", "trip", "wedding", "office", "gym", "school", "sports", "travel", "summer"]:
+        for occ in ["goa", "trip", "wedding", "office", "gym", "school", "sports", "travel", "summer", "navratri", "navaratri", "diwali", "festive", "ethnic", "party"]:
             if occ in low:
                 occasion = occ.capitalize()
                 break

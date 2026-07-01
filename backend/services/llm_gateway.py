@@ -15,6 +15,16 @@ litellm.set_verbose = False
 
 
 # ---------------------------------------------------------------------------
+# OpenRouter rate limits (free tier)
+# ---------------------------------------------------------------------------
+
+OPENROUTER_FREE_REQ_PER_MIN = 20
+OPENROUTER_FREE_REQ_PER_DAY = 200
+RATE_LIMIT_WINDOW_SECONDS = 60
+RATE_LIMIT_WINDOW_DAILY = 86400
+
+
+# ---------------------------------------------------------------------------
 # Model registry
 # ---------------------------------------------------------------------------
 
@@ -24,12 +34,11 @@ class ModelConfig(TypedDict):
 
 
 _MODELS_REGISTRY: Dict[str, ModelConfig] = {
-    "gpt-oss-120b": {"model": "openrouter/openai/gpt-oss-120b:free", "env_key": "OPENROUTER_API_KEY"},
-    "gpt-oss-20b": {"model": "openrouter/openai/gpt-oss-20b:free", "env_key": "OPENROUTER_API_KEY"},
-    "nemotron-3-nano-30b": {"model": "openrouter/nvidia/nemotron-3-nano-30b-a3b:free", "env_key": "OPENROUTER_API_KEY"},
-    "qwen3-next-80b-a3b": {"model": "openrouter/qwen/qwen3-next-80b-a3b-instruct:free", "env_key": "OPENROUTER_API_KEY"},
+    "gemini-2.0-flash": {"model": "openrouter/google/gemini-2.0-flash-exp:free", "env_key": "OPENROUTER_API_KEY"},
     "llama-3.3-70b": {"model": "openrouter/meta-llama/llama-3.3-70b-instruct:free", "env_key": "OPENROUTER_API_KEY"},
-    "nemotron-3-ultra-550b": {"model": "openrouter/nvidia/nemotron-3-ultra-550b-a55b:free", "env_key": "OPENROUTER_API_KEY"},
+    "qwen-2.5-coder": {"model": "openrouter/qwen/qwen-2.5-coder-32b-instruct:free", "env_key": "OPENROUTER_API_KEY"},
+    "llama-3.1-8b": {"model": "openrouter/meta-llama/llama-3.1-8b-instruct:free", "env_key": "OPENROUTER_API_KEY"},
+    "llama-3.2-3b": {"model": "openrouter/meta-llama/llama-3.2-3b-instruct:free", "env_key": "OPENROUTER_API_KEY"},
 }
 
 
@@ -38,12 +47,12 @@ _MODELS_REGISTRY: Dict[str, ModelConfig] = {
 # ---------------------------------------------------------------------------
 
 _TASK_MODELS: Dict[str, List[str]] = {
-    "intent_classification": ["llama-3.3-70b", "gpt-oss-20b", "nemotron-3-nano-30b"],
-    "context_keyword_generation": ["llama-3.3-70b", "gpt-oss-20b", "nemotron-3-nano-30b"],
-    "product_extraction": ["gpt-oss-120b", "qwen3-next-80b-a3b", "nemotron-3-ultra-550b"],
-    "response_generation": ["gpt-oss-120b", "qwen3-next-80b-a3b", "llama-3.3-70b"],
-    "comparison": ["gpt-oss-120b", "llama-3.3-70b", "qwen3-next-80b-a3b"],
-    "summarization": ["gpt-oss-20b", "nemotron-3-nano-30b", "llama-3.3-70b"],
+    "intent_classification": ["llama-3.3-70b", "gemini-2.0-flash", "llama-3.1-8b"],
+    "context_keyword_generation": ["llama-3.3-70b", "gemini-2.0-flash", "llama-3.1-8b"],
+    "product_extraction": ["gemini-2.0-flash", "llama-3.3-70b", "qwen-2.5-coder"],
+    "response_generation": ["gemini-2.0-flash", "llama-3.3-70b", "llama-3.1-8b"],
+    "comparison": ["gemini-2.0-flash", "llama-3.3-70b", "qwen-2.5-coder"],
+    "summarization": ["llama-3.2-3b", "llama-3.1-8b", "gemini-2.0-flash"],
 }
 
 
@@ -92,6 +101,23 @@ COOLDOWN_SECONDS = 30
 MAX_INPUT_CHARS = 6000  # ~2000 tokens — chunk if larger
 
 
+class ModelStats:
+    __slots__ = ("success_count", "rate_limit_count", "error_count",
+                 "prompt_tokens", "completion_tokens", "total_tokens",
+                 "last_call_at", "last_error_at", "last_error_msg")
+
+    def __init__(self) -> None:
+        self.success_count: int = 0
+        self.rate_limit_count: int = 0
+        self.error_count: int = 0
+        self.prompt_tokens: int = 0
+        self.completion_tokens: int = 0
+        self.total_tokens: int = 0
+        self.last_call_at: Optional[float] = None
+        self.last_error_at: Optional[float] = None
+        self.last_error_msg: Optional[str] = None
+
+
 class LLMGateway:
     def __init__(self) -> None:
         self._task_profiles = _TASK_PROFILES
@@ -99,6 +125,13 @@ class LLMGateway:
         self._usage: Counter = Counter()
         # Cooldown: model_key -> timestamp until which it's skipped
         self._cooldowns: Dict[str, float] = {}
+        # Per-model detailed stats
+        self._stats: Dict[str, ModelStats] = {mk: ModelStats() for mk in _MODELS_REGISTRY}
+        # Sliding window of request timestamps for rate-limit estimation
+        self._request_timestamps: List[float] = []
+        # Daily request count + timestamp of last reset
+        self._daily_request_count: int = 0
+        self._daily_reset_at: float = time.time()
 
     # ------------------------------------------------------------------
     # Public API
@@ -141,6 +174,7 @@ class LLMGateway:
                     return chunked
                 continue
 
+            self._record_request()
             try:
                 self._usage[f"{task}:{model_key}"] += 1
                 logger.info("Calling %s for task '%s' (usage=%d)", model_cfg["model"], task, self._usage[f"{task}:{model_key}"])
@@ -151,11 +185,13 @@ class LLMGateway:
                     **params,
                 )
                 content = resp.choices[0].message.content
+                self._record_success(model_key, resp)
                 if content:
                     return content.strip()
                 logger.warning("%s returned empty content", model_cfg["model"])
             except Exception as exc:
                 last_error = exc
+                self._record_error(model_key, exc)
                 exc_str = str(exc).lower()
                 if "rate_limit" in exc_str or "429" in exc_str or "too many requests" in exc_str:
                     cooldown_until = time.time() + COOLDOWN_SECONDS
@@ -217,6 +253,7 @@ class LLMGateway:
             chunk_messages = list(messages)
             chunk_messages[user_idx] = {"role": "user", "content": chunk}
 
+            self._record_request()
             try:
                 logger.info("Chunk %d/%d — calling %s", idx + 1, len(chunks), model_cfg["model"])
                 resp = completion(
@@ -226,11 +263,13 @@ class LLMGateway:
                     **params,
                 )
                 content = resp.choices[0].message.content
+                self._record_success(model_key, resp)
                 if content:
                     merged_results.append(content.strip())
                 else:
                     logger.warning("Chunk %d returned empty content", idx + 1)
             except Exception as exc:
+                self._record_error(model_key, exc)
                 exc_str = str(exc).lower()
                 if "rate_limit" in exc_str or "429" in exc_str:
                     self._cooldowns[model_key] = time.time() + COOLDOWN_SECONDS
@@ -254,6 +293,7 @@ class LLMGateway:
         params: Dict[str, Any],
     ) -> Optional[str]:
         """Single call without chunking."""
+        self._record_request()
         try:
             resp = completion(
                 model=model_cfg["model"],
@@ -262,14 +302,105 @@ class LLMGateway:
                 **params,
             )
             content = resp.choices[0].message.content
+            self._record_success(model_key, resp)
             if content:
                 return content.strip()
         except Exception as exc:
+            self._record_error(model_key, exc)
             exc_str = str(exc).lower()
             if "rate_limit" in exc_str or "429" in exc_str:
                 self._cooldowns[model_key] = time.time() + COOLDOWN_SECONDS
             logger.warning("_call_single failed on %s: %s", model_cfg["model"], exc)
         return None
+
+    # ------------------------------------------------------------------
+    # Token / rate-limit tracking
+    # ------------------------------------------------------------------
+
+    def _record_request(self) -> None:
+        now = time.time()
+        self._request_timestamps.append(now)
+        # Prune old entries (> 1 min)
+        cutoff = now - RATE_LIMIT_WINDOW_SECONDS
+        self._request_timestamps = [t for t in self._request_timestamps if t >= cutoff]
+
+        # Daily counter: reset if 24h have passed
+        if now - self._daily_reset_at > RATE_LIMIT_WINDOW_DAILY:
+            self._daily_request_count = 0
+            self._daily_reset_at = now
+        self._daily_request_count += 1
+
+    def _record_success(self, model_key: str, resp: Any) -> None:
+        stats = self._stats[model_key]
+        stats.success_count += 1
+        stats.last_call_at = time.time()
+        try:
+            usage = resp.usage
+            if usage:
+                pt = getattr(usage, "prompt_tokens", 0) or 0
+                ct = getattr(usage, "completion_tokens", 0) or 0
+                tt = getattr(usage, "total_tokens", 0) or (pt + ct)
+                stats.prompt_tokens += pt
+                stats.completion_tokens += ct
+                stats.total_tokens += tt
+        except Exception:
+            pass
+
+    def _record_error(self, model_key: str, exc: Exception) -> None:
+        stats = self._stats[model_key]
+        exc_str = str(exc).lower()
+        if "rate_limit" in exc_str or "429" in exc_str or "too many requests" in exc_str:
+            stats.rate_limit_count += 1
+        else:
+            stats.error_count += 1
+        stats.last_error_at = time.time()
+        stats.last_error_msg = str(exc)[:200]
+
+    def get_status(self) -> Dict[str, Any]:
+        now = time.time()
+        self._record_request()  # prunes old entries
+
+        per_model: Dict[str, Dict[str, Any]] = {}
+        for mk, cfg in _MODELS_REGISTRY.items():
+            s = self._stats[mk]
+            cd = self._cooldowns.get(mk)
+            per_model[mk] = {
+                "model": cfg["model"],
+                "api_key_configured": bool(os.environ.get(cfg["env_key"])),
+                "success_count": s.success_count,
+                "rate_limit_count": s.rate_limit_count,
+                "error_count": s.error_count,
+                "prompt_tokens": s.prompt_tokens,
+                "completion_tokens": s.completion_tokens,
+                "total_tokens": s.total_tokens,
+                "last_call_at": s.last_call_at,
+                "last_error_at": s.last_error_at,
+                "last_error_msg": s.last_error_msg,
+                "in_cooldown": cd is not None and now < cd,
+                "cooldown_remaining_sec": round(cd - now, 1) if cd and now < cd else 0,
+            }
+
+        # Rate-limit estimation
+        window_requests = len(self._request_timestamps)
+        daily_requests = self._daily_request_count
+
+        total_rl = sum(s.rate_limit_count for s in self._stats.values())
+        globally_limited = total_rl > 0 or window_requests >= OPENROUTER_FREE_REQ_PER_MIN
+
+        return {
+            "timestamp": now,
+            "global": {
+                "requests_last_min": window_requests,
+                "requests_last_day": daily_requests,
+                "free_tier_limit_per_min": OPENROUTER_FREE_REQ_PER_MIN,
+                "free_tier_limit_per_day": OPENROUTER_FREE_REQ_PER_DAY,
+                "estimated_remaining_per_min": max(0, OPENROUTER_FREE_REQ_PER_MIN - window_requests),
+                "estimated_remaining_per_day": max(0, OPENROUTER_FREE_REQ_PER_DAY - daily_requests),
+                "globally_rate_limited": globally_limited,
+            },
+            "models": per_model,
+            "tasks": dict(_TASK_MODELS),
+        }
 
     # ------------------------------------------------------------------
     # Helpers
@@ -327,6 +458,19 @@ class LLMGateway:
 
         return parts
 
+    # ------------------------------------------------------------------
+    # Legacy compat: expose _usage and _cooldowns for existing callers
+    # ------------------------------------------------------------------
+
+    @property
+    def usage(self) -> Counter:
+        return self._usage
+
+    @property
+    def cooldowns(self) -> Dict[str, float]:
+        return self._cooldowns
+
+
     def _merge_json_arrays(self, json_strings: List[str]) -> str:
         """Merge multiple JSON arrays like [a,b,c] + [d,e] -> [a,b,c,d,e]."""
         items: List[str] = []
@@ -347,3 +491,7 @@ class LLMGateway:
                 items.append(s.lstrip("[").rstrip("]"))
         merged = "[" + ",".join(items) + "]"
         return merged
+
+
+# Module-level singleton — import this to read status from endpoints
+gateway = LLMGateway()

@@ -228,9 +228,10 @@ class ApifyService:
             p2_price = budget * 0.90 if budget else 999.0
             p3_price = budget * 0.60 if budget else 599.0
 
-            # Dynamic check for winter query terms
+            # Dynamic check for winter/ethnic query terms
             query_text = " ".join([str(kw) for kw in intent.get("keywords", [])] + [str(q) for q in intent.get("search_queries", [])]).lower()
             is_winter = any(w in query_text for w in ["winter", "cold", "jacket", "sweater", "hoodie", "cardigan", "coat", "woolen"])
+            is_ethnic = any(w in query_text for w in ["navratri", "garba", "diwali", "festive", "ethnic", "kurta", "wedding", "marriage", "traditional", "saree", "chaniya", "choli", "koti", "sherwani"])
 
             if is_winter:
                 simulated.append({
@@ -271,6 +272,47 @@ class ApifyService:
                     "description": "Soft knitted warm winter cap and scarf matching combo. Excellent coverage against chilly winds.",
                     "specifications": {"material": "100% Soft Wool", "pieces": "Beanie + Muffler", "stretch": "One Size Fit"},
                     "source": "amazon.in"
+                })
+            elif is_ethnic:
+                occ_val = occasion if occasion else "Festive"
+                simulated.append({
+                    "name": f"Men's Cotton Blend Traditional Straight Kurta Pajama Set for {occ_val}",
+                    "brand": preferred_brand if preferred_brand != "Brand" else "Manyavar",
+                    "price": p1_price,
+                    "mrp": p1_price * 1.5,
+                    "rating": 4.4,
+                    "review_count": 920,
+                    "image_url": "https://images.unsplash.com/photo-1583391733956-3750e0ff4e8b?w=500",
+                    "product_url": "https://www.myntra.com/kurta-sets/manyavar/men-traditional-kurta/24715999/buy",
+                    "description": "Elegant traditional straight long kurta with white pajama set, perfect for festivals, weddings, and traditional events.",
+                    "specifications": {"material": "Cotton Blend", "fit": "Regular Fit", "sleeve": "Full Sleeve", "occasion": f"{occ_val}"},
+                    "source": "myntra.com"
+                })
+                simulated.append({
+                    "name": f"Women's Designer Mirror Work Chaniya Choli Set for Navratri Garba",
+                    "brand": preferred_brand if preferred_brand != "Brand" else "Biba",
+                    "price": p2_price,
+                    "mrp": p2_price * 1.6,
+                    "rating": 4.5,
+                    "review_count": 480,
+                    "image_url": "https://images.unsplash.com/photo-1610030469983-98e550d6193c?w=500",
+                    "product_url": "https://www.myntra.com/chaniya-cholis/biba/women-navratri-set/11468750/buy",
+                    "description": "Vibrant traditional Gujarati style chaniya choli with beautiful embroidery and real mirror work, perfect for Garba nights.",
+                    "specifications": {"material": "Cotton-Rayon Blend", "fit": "Flared", "work": "Embroidery & Mirror Work", "occasion": "Garba / Navratri"},
+                    "source": "myntra.com"
+                })
+                simulated.append({
+                    "name": f"Women's Festive Wear Silk Blend Kurta Pant & Dupatta Set",
+                    "brand": preferred_brand if preferred_brand != "Brand" else "W",
+                    "price": p3_price,
+                    "mrp": p3_price * 1.8,
+                    "rating": 4.3,
+                    "review_count": 673,
+                    "image_url": "https://images.unsplash.com/photo-1617627143750-d86bc21e42bb?w=500",
+                    "product_url": "https://www.myntra.com/kurta-sets/w/women-silk-blend-set/24715980/buy",
+                    "description": "Premium look straight fit silk blend kurta with matching pants and floral printed dupatta set, perfect for festive wear.",
+                    "specifications": {"material": "Silk Blend", "fit": "Straight Fit", "set_pieces": "Kurta, Pants, Dupatta", "occasion": f"{occ_val}"},
+                    "source": "myntra.com"
                 })
             else:
                 style_label = style if style else "Beach"

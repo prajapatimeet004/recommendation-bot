@@ -9,7 +9,7 @@ from backend.services.keyword_service import KeywordService, parse_budget, detec
 from backend.services.embedding_service import EmbeddingService
 from backend.services.vector_service import VectorService
 from backend.services.recommendation_service import RecommendationService
-from backend.services.llm_gateway import LLMGateway
+from backend.services.llm_gateway import gateway as _llm_gateway
 from backend.services.product_service import store_pagination, clear_pagination, enrich_product
 from backend.services.pipeline_logger import get_pipeline_logger
 
@@ -33,8 +33,6 @@ CATEGORY_FALLBACK_MAP = {
 }
 
 
-_llm_gateway = LLMGateway()
-
 _RESPONSE_GENERATION_PROMPT = """\
 You are a knowledgeable e-commerce sales assistant. Answer the user's question naturally and helpfully using the product details provided.
 
@@ -48,6 +46,26 @@ You are a knowledgeable e-commerce sales assistant. Answer the user's question n
 {user_message}
 
 Answer concisely and helpfully. Be specific about specifications, prices, and features. If the user asks about a specific product feature (battery life, camera, display, processor, etc.), provide exact details from the specs. Keep your response under 4 sentences unless more detail is specifically requested."""
+
+_COMPARISON_PROMPT = """\
+You are an expert e-commerce product comparison assistant.
+Compare the following two products side-by-side based on the user's query: "{user_message}"
+
+Product 1:
+{prod1}
+
+Product 2:
+{prod2}
+
+Return ONLY a valid JSON object with EXACTLY two fields:
+1. "specs": A list of 3-6 objects comparing key features. Each object MUST have keys:
+   - "feature": The name of the feature (e.g. "Display", "Processor", "Battery", "Material")
+   - "val1": Product 1's value for this feature.
+   - "val2": Product 2's value for this feature.
+2. "overview": A concise markdown paragraph (3-4 sentences) summarizing the key differences and recommending which product is better for what type of user.
+
+Ensure the output is raw JSON with no markdown formatting around it.
+"""
 
 
 async def run_pipeline(
@@ -63,12 +81,14 @@ async def run_pipeline(
 
     if history:
         plog.info("  -> history has %d messages, extracting context", len(history))
-        if len(history) >= 2:
-            last_msg = history[-1]
-            prev_user_msg = history[-2]
+        if len(history) >= 3:
+            current_user_msg = history[-1]
+            last_assistant_msg = history[-2]
+            prev_user_msg = history[-3]
             if (
-                last_msg.role == "assistant"
-                and last_msg.response_type == "NEEDS_CLARIFICATION"
+                current_user_msg.role == "user"
+                and last_assistant_msg.role == "assistant"
+                and last_assistant_msg.response_type == "NEEDS_CLARIFICATION"
                 and prev_user_msg.role == "user"
             ):
                 plog.info(
@@ -175,10 +195,13 @@ async def run_pipeline(
     budget = parse_budget(user_message)
     if budget is not None:
         plog.info("  -> Parsed budget constraint: Rs %.2f", budget)
-    top_products = _recommendation_service.top_n(products, n=5, query=user_message, budget=budget)
+    # Rank ALL products so pagination order exactly matches top_products display order
+    products = _recommendation_service.rank(products, query=user_message, budget=budget)
+    top_products = products[:5]
 
     # Calculate highest local score
     max_score = max(p.get("_composite_score", 0.0) for p in top_products) if top_products else 0.0
+    chroma_fallback = {"top": list(top_products), "all": list(products)}
 
     if max_score >= 0.70:
         plog.info("  -> Found highly relevant local product(s) (max score = %.4f). Returning instantly.", max_score)
@@ -205,8 +228,9 @@ async def run_pipeline(
             if score >= 0.6:
                 accepted_products.append(p)
                 
-        # Rank and select top 5 from scraped products
-        top_products = _recommendation_service.top_n(accepted_products, n=5, query=user_message, budget=budget)
+        # Rank ALL scraped products so pagination order exactly matches top_products
+        ranked_apify_products = _recommendation_service.rank(accepted_products, query=user_message, budget=budget)
+        top_products = ranked_apify_products[:5]
         
         # Deduplicate and store all accepted scraped products in ChromaDB
         if accepted_products:
@@ -238,13 +262,20 @@ async def run_pipeline(
                 plog.info("  -> Storing %d new crawled products in ChromaDB", len(new_products))
                 await _vector_service.store_products(new_products, keywords=keywords)
                 
-        # Map fields to match database schema expected by frontend
-        for p in top_products:
-            p["url"] = p.get("product_url") or p.get("url")
-            p["image"] = p.get("image_url") or p.get("image")
-        products = accepted_products
+        # If Apify returned too few products, fall back to ChromaDB results
+        if not top_products or len(top_products) < 3:
+            plog.info("  -> Apify returned only %d accepted products. Falling back to local ChromaDB results.", len(accepted_products))
+            top_products = chroma_fallback["top"]
+            products = chroma_fallback["all"]
+            data_source = "local"
+        else:
+            # Map fields to match database schema expected by frontend for ALL products
+            for p in ranked_apify_products:
+                p["url"] = p.get("product_url") or p.get("url")
+                p["image"] = p.get("image_url") or p.get("image")
+            products = ranked_apify_products
+            data_source = "live"
         run_background_discovery = True
-        data_source = "live"
 
     if session_id:
         store_pagination(session_id, user_message, products)
@@ -259,6 +290,13 @@ async def run_pipeline(
         if generated_response:
             plog.info("  -> generated LLM response: %s", generated_response[:80])
 
+    comparison = None
+    if intent == "COMPARE" and len(top_products) >= 2:
+        plog.info("  -> Generating side-by-side comparison for top 2 products")
+        comparison = await _generate_comparison(top_products[:2], user_message)
+        if comparison:
+            plog.info("  -> Comparison generated successfully")
+
     return {
         "intent": intent,
         "products": top_products,
@@ -268,6 +306,7 @@ async def run_pipeline(
         "detailed_intent": detailed_intent,
         "run_background_discovery": run_background_discovery,
         "generated_response": generated_response,
+        "comparison": comparison,
     }
 
 
@@ -349,6 +388,107 @@ async def _generate_product_response(
     except Exception as exc:
         plog.warning("  -> Response generation failed: %s", exc)
         return None
+
+
+async def _generate_comparison(products: List[Dict[str, Any]], user_message: str) -> Optional[Dict[str, Any]]:
+    if len(products) < 2:
+        return None
+    p1 = products[0]
+    p2 = products[1]
+    try:
+        import json
+        prod1_str = f"Name: {p1.get('name')}\nPrice: {p1.get('price')}\nBrand: {p1.get('brand')}\nSpecs: {p1.get('specifications') or p1.get('specs')}"
+        prod2_str = f"Name: {p2.get('name')}\nPrice: {p2.get('price')}\nBrand: {p2.get('brand')}\nSpecs: {p2.get('specifications') or p2.get('specs')}"
+        
+        prompt = _COMPARISON_PROMPT.format(user_message=user_message, prod1=prod1_str, prod2=prod2_str)
+        messages = [
+            {"role": "system", "content": "You are a helpful AI assistant that outputs JSON."},
+            {"role": "user", "content": prompt},
+        ]
+        response = _llm_gateway.call("comparison", messages)
+        if response:
+            cleaned = response.strip()
+            if cleaned.startswith("```"):
+                cleaned = cleaned.split("\n", 1)[-1] if "\n" in cleaned else cleaned
+                cleaned = cleaned.rsplit("```", 1)[0] if "```" in cleaned else cleaned
+            
+            parsed = json.loads(cleaned.strip())
+            if "specs" in parsed and "overview" in parsed:
+                # Add products back so the frontend has them for headers
+                parsed["products"] = products[:2]
+                return parsed
+    except Exception as exc:
+        plog.warning("  -> Comparison generation failed: %s", exc)
+
+    # Local fallback if LLM is offline/rate-limited or call fails
+    try:
+        plog.info("  -> LLM comparison unavailable or failed. Generating local heuristic comparison.")
+        specs_comparison = []
+        # 1. Compare Price
+        p1_price = p1.get('price')
+        p2_price = p2.get('price')
+        val1_price = f"Rs {p1_price:,.2f}" if isinstance(p1_price, (int, float)) else str(p1_price or 'N/A')
+        val2_price = f"Rs {p2_price:,.2f}" if isinstance(p2_price, (int, float)) else str(p2_price or 'N/A')
+        specs_comparison.append({
+            "feature": "Price",
+            "val1": val1_price,
+            "val2": val2_price
+        })
+        # 2. Compare Brand
+        specs_comparison.append({
+            "feature": "Brand",
+            "val1": str(p1.get('brand', 'Generic')),
+            "val2": str(p2.get('brand', 'Generic'))
+        })
+        # 3. Compare Rating
+        specs_comparison.append({
+            "feature": "Rating",
+            "val1": f"{p1.get('rating', 'N/A')}/5" if p1.get('rating') else 'N/A',
+            "val2": f"{p2.get('rating', 'N/A')}/5" if p2.get('rating') else 'N/A'
+        })
+        
+        # 4. Compare other specs from specifications dict
+        s1 = p1.get('specifications') or p1.get('specs') or {}
+        s2 = p2.get('specifications') or p2.get('specs') or {}
+        if isinstance(s1, dict) and isinstance(s2, dict):
+            all_keys = list(s1.keys())
+            for k in s2.keys():
+                if k not in all_keys:
+                    all_keys.append(k)
+            # Limit to top 6 specifications to keep it clean
+            for k in all_keys[:6]:
+                feature_name = k.replace("_", " ").title()
+                specs_comparison.append({
+                    "feature": feature_name,
+                    "val1": str(s1.get(k, "N/A")),
+                    "val2": str(s2.get(k, "N/A"))
+                })
+        
+        # 5. Generate a helpful overview paragraph
+        overview = f"Side-by-side comparison between **{p1.get('name')}** and **{p2.get('name')}**. "
+        if isinstance(p1_price, (int, float)) and isinstance(p2_price, (int, float)):
+            if p1_price == p2_price:
+                overview += "Both products are priced identically. "
+            else:
+                diff = abs(p1_price - p2_price)
+                cheaper = p1.get('name') if p1_price < p2_price else p2.get('name')
+                overview += f"The **{cheaper}** is more budget-friendly, saving you Rs {diff:,.2f}. "
+        if p1.get('rating') and p2.get('rating'):
+            r1 = p1.get('rating')
+            r2 = p2.get('rating')
+            if r1 != r2:
+                higher_rated = p1.get('name') if r1 > r2 else p2.get('name')
+                overview += f"The **{higher_rated}** has a slightly higher user rating of {max(r1, r2)}/5 compared to {min(r1, r2)}/5. "
+        overview += "Please review the specifications matrix above to choose the best option for your needs."
+        
+        return {
+            "specs": specs_comparison,
+            "overview": overview,
+            "products": products[:2]
+        }
+    except Exception as exc:
+        plog.error("  -> Local fallback comparison also failed: %s", exc)
+    return None
 
 
 def _apply_keyword_scores(products: List[Dict[str, Any]], keywords: List[str]) -> None:
