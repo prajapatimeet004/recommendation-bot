@@ -8,6 +8,7 @@ from typing import Any, Dict, List, Optional
 
 from backend.services.llm_gateway import LLMGateway
 from backend.services.pipeline_logger import get_pipeline_logger
+from backend.services.local_intent_classifier import LocalIntentClassifier
 
 logger = logging.getLogger(__name__)
 plog = get_pipeline_logger()
@@ -16,59 +17,73 @@ _INTENT_KEYWORD_PROMPT = """\
 You are a shopping intent classifier, keyword generation engine, and category classifier for an Indian e-commerce assistant.
 
 ## Task
-Analyze the user's message and return a JSON object with exactly three fields:
+Analyze the user's message and return a valid JSON object with exactly three fields:
 1. `intent` — one of: RECOMMEND, COMPARE, FOLLOW_UP, BUNDLE, GENERAL, EXPLAIN, GREETING
-2. `keywords` — approximately 10 intelligent shopping search keywords
-3. `category` — the most appropriate canonical product category, one of: smartphones, laptops, fashion, beauty, footwear, home_appliances, electronics, other
+2. `keywords` — exactly 10 generic shopping search keywords derived ONLY from the user's message
+3. `category` — one of: smartphones, laptops, fashion, beauty, footwear, home_appliances, electronics, other
+
+## CRITICAL RULES — YOU MUST FOLLOW THESE:
+- NEVER invent specific products, model names, brand names, prices, or specifications.
+- NEVER include a brand name unless the user explicitly mentions it in their message.
+- NEVER include a price or budget figure unless the user explicitly states one.
+- Keywords must be GENERIC category-level shopping terms (e.g., "running shoes" not "Nike Air Zoom Pegasus 40").
+- Do NOT rewrite or rephrase proper nouns from the user query — use them verbatim.
+- If the query spans multiple categories (e.g., "shoes and clothes"), pick the more specific one mentioned, or "other" if equally broad.
+- Generate exactly 10 keywords. Do not generate fewer or more.
 
 ## Intent Definitions
 - RECOMMEND: user wants product suggestions (keywords: suggest, recommend, best, find, buy, need, looking for, help me choose)
 - COMPARE: user wants to compare products (keywords: compare, versus, vs, difference between)
-- FOLLOW_UP: user is asking follow-up on previously shown products (keywords: show more, more options, tell me about, what about, how about)
+- FOLLOW_UP: user is asking follow-up on previously shown products
 - BUNDLE: user wants a lifestyle bundle or kit (keywords: kit, bundle, setup, combo, everything for, full gear)
 - GENERAL: off-topic or non-shopping message
 - EXPLAIN: user wants explanation of product features, specs, or technology
 - GREETING: greeting, thank you, hello, hi, bye
 
 ## Category Definitions
-- smartphones: mobile phones, cellphones, iPhones, androids, accessories like phone cases
-- laptops: notebooks, MacBooks, gaming laptops
-- fashion: clothing, shirts, t-shirts, jeans, dresses, sarees, jackets, hoodies
-- beauty: cosmetics, skincare, lipstick, foundation, sunscreen, shampoo, moisturizer
-- footwear: shoes, sneakers, sandals, boots, heels
-- home_appliances: refrigerators, washing machines, air conditioners, TVs, microwave ovens, kitchen appliances
-- electronics: headphones, smartwatches, cameras, tablets, speaker systems, general tech accessories
-- other: anything else that does not fit the above categories
-
-## Keyword Generation Rules
-- Generate approximately 10 diverse, specific shopping keywords
-- Do NOT simply repeat the user's words — infer context
-- Account for Indian market, seasons, occasions, and lifestyle
-- Keywords should maximize product discovery across Flipkart, Amazon.in, Myntra, Nykaa, Croma, Ajio
+- smartphones: mobile phones only. NOT phone cases, chargers, or accessories.
+- laptops: notebooks, MacBooks, gaming laptops only.
+- fashion: clothing, shirts, t-shirts, jeans, dresses, sarees, jackets, hoodies.
+- beauty: cosmetics, skincare, lipstick, foundation, sunscreen, shampoo, moisturizer.
+- footwear: shoes, sneakers, sandals, boots, heels.
+- home_appliances: refrigerators, washing machines, air conditioners, TVs, microwave ovens only.
+- electronics: headphones, smartwatches, cameras, tablets, speaker systems, general tech accessories.
+- other: anything that does not fit the above categories, or spans multiple categories.
 
 ## Examples
 
 User: "I need clothes for Navratri"
-Response: {"intent": "RECOMMEND", "keywords": ["Navratri Kurta", "Traditional Kurta", "Ethnic Wear", "Festival Wear", "Kurta Pajama", "Mirror Work Kurta", "Navratri Collection", "Men Ethnic Wear", "Women's Ethnic Wear", "Garba Outfit"], "category": "fashion"}
+Response: {"intent": "RECOMMEND", "keywords": ["traditional kurta", "ethnic wear", "festival wear", "kurta pajama", "navratri outfit", "festive clothing", "ethnic men wear", "ethnic women wear", "garba attire", "traditional clothing"], "category": "fashion"}
 
 User: "Phone for photography"
-Response: {"intent": "RECOMMEND", "keywords": ["Camera Phone", "50MP Camera", "OIS Smartphone", "Flagship Camera", "Night Photography Phone", "Photography Smartphone", "AMOLED Phone", "4K Video Recording Phone", "Optical Zoom Phone", "Portrait Camera Phone"], "category": "smartphones"}
+Response: {"intent": "RECOMMEND", "keywords": ["camera phone", "photography smartphone", "high megapixel phone", "portrait camera phone", "night photography phone", "optical zoom phone", "4k video phone", "smartphone camera", "best camera phone", "mobile photography"], "category": "smartphones"}
 
 User: "Compare iPhone and Samsung"
-Response: {"intent": "COMPARE", "keywords": ["iPhone 16 Pro", "Samsung Galaxy S25 Ultra", "iPhone vs Samsung comparison", "Flagship smartphone", "Premium phone"], "category": "smartphones"}
+Response: {"intent": "COMPARE", "keywords": ["iphone samsung comparison", "flagship smartphone", "premium phone", "ios android compare", "smartphone compare", "apple samsung", "high end phone", "smartphone features", "mobile phone comparison", "best smartphone"], "category": "smartphones"}
 
 User: "I'm joining a gym"
-Response: {"intent": "BUNDLE", "keywords": ["Gym shoes men", "Workout clothes", "Gym bag", "Gym equipment", "Activewear", "Gym kit", "Fitness accessories", "Protein supplements", "Dumbbell set", "Yoga mat"], "category": "other"}
+Response: {"intent": "BUNDLE", "keywords": ["gym shoes", "workout clothes", "activewear", "gym bag", "fitness accessories", "gym equipment", "workout gear", "sportswear", "training shoes", "gym t-shirt"], "category": "other"}
 
-Return ONLY valid JSON. No markdown, no explanation."""
+Return ONLY valid JSON. No markdown, no explanation, no conversational text."""
 
 
 _DETAILED_INTENT_PROMPT_WITH_CONTEXT = """\
-You are an advanced shopping intent parser for an e-commerce assistant.
+You are a precise shopping intent parser for an e-commerce assistant.
 You MUST return ONLY a valid JSON object. No conversational text, no explanations, no markdown fences.
 
+## CRITICAL RULES — YOU MUST FOLLOW THESE:
+- NEVER invent product names, model numbers, brand names, prices, or specifications.
+- Include a brand in `brand_preference` ONLY if the user explicitly mentions it in the conversation.
+- Include a `budget` value ONLY if the user explicitly states a price limit.
+- Set `occasion` to null unless the user explicitly mentions an occasion.
+- Set `style` to null unless the user explicitly mentions a style.
+- Keywords and search_queries must be GENERIC (e.g., "tablet accessories" not "Samsung Tab S9 case cover").
+- If the conversation history suggests the user is referring to a previously shown product, use FOLLOW_UP intent.
+- If the user's current message is a standalone new request, use RECOMMEND intent.
+- Do NOT carry over brand_preference, budget, occasion, or style from history unless the current message references them.
+
 ## Conversation History
-Use this history to understand references (e.g., "that product", "accessories for it").
+Use this history ONLY to resolve pronouns and references (e.g., "that product", "accessories for it", "this brand").
 <history>
 {conversation_context}
 </history>
@@ -80,16 +95,26 @@ Use this history to understand references (e.g., "that product", "accessories fo
 
 ## Task
 Analyze the user's CURRENT MESSAGE in the context of the conversation history above.
-Return a valid JSON object with the following fields:
+Return a valid JSON object with ALL of the following fields:
+
 1. `intent` — one of: RECOMMEND, COMPARE, FOLLOW_UP, BUNDLE, GENERAL, EXPLAIN, GREETING
-2. `category` — canonical category: smartphones, laptops, fashion, beauty, footwear, home_appliances, electronics, or other
-3. `subcategory` — specific product subcategory (e.g. mobile_phones, casual_tshirts, running_shoes, face_cream, etc.)
-4. `budget` — maximum price limit if specified (integer in INR, or null if not specified)
-5. `occasion` — usage occasion (e.g., Goa trip, gym, wedding, office, daily, or null)
-6. `style` — style profile (e.g. oversized, casual, formal, traditional, sporty, or null)
-7. `brand_preference` — list of preferred brands mentioned (e.g., ["Apple", "Samsung"] or empty list [])
-8. `keywords` — list of approx 10 optimized search keywords (INCLUDE context from history)
-9. `search_queries` — list of 5 to 10 optimized shopping search query phrases
+2. `category` — one of: smartphones, laptops, fashion, beauty, footwear, home_appliances, electronics, other
+3. `subcategory` — generic subcategory (e.g., mobile_phones, casual_tshirts, running_shoes, face_cream, general). Set to "{{category}}_general" if unsure.
+4. `budget` — integer in INR, or null. Set ONLY if user explicitly states a price.
+5. `occasion` — string or null. Set ONLY if user explicitly mentions one (e.g., "gym", "wedding", "office", "goa trip").
+6. `style` — string or null. Set ONLY if user explicitly mentions one (e.g., "casual", "formal", "sporty", "traditional").
+7. `brand_preference` — list of strings, or empty list. Include ONLY brands the user explicitly named.
+8. `keywords` — list of exactly 10 generic search keywords.
+9. `search_queries` — list of exactly 5 generic search query phrases.
+
+## Intent Selection Rules
+- RECOMMEND: user asks for product suggestions. Default for shopping queries.
+- COMPARE: user explicitly asks to compare two or more items.
+- FOLLOW_UP: user refers to a previously shown product ("this", "that", "it", "show more", "accessories for it").
+- BUNDLE: user asks for a kit, bundle, combo, or everything for an activity.
+- GENERAL: non-shopping question.
+- EXPLAIN: user asks for explanation of a feature or technology.
+- GREETING: hello, hi, thanks, bye.
 
 Example with context:
 <history>
@@ -107,25 +132,36 @@ Expected Response:
   "occasion": null,
   "style": null,
   "brand_preference": ["Samsung"],
-  "keywords": ["Samsung tablet accessories", "Samsung Tab S9 case", "Galaxy Tab pen", "Samsung tablet cover"],
-  "search_queries": ["Samsung tablet accessories", "Samsung Tab S9 case cover", "Galaxy Tab S9 FE accessories"]
+  "keywords": ["tablet accessories", "tablet case", "tablet cover", "tablet stand", "tablet keyboard", "tablet screen protector", "stylus pen", "tablet bag", "tablet charger", "tablet dock"],
+  "search_queries": ["tablet accessories online", "buy tablet accessories india", "tablet case and cover", "tablet keyboard and stylus", "tablet stand and mount"]
 }}
 """
 
 _DETAILED_INTENT_PROMPT = """\
-You are an advanced shopping intent parser for an e-commerce assistant.
+You are a precise shopping intent parser for an e-commerce assistant.
 You MUST return ONLY a valid JSON object. No conversational text, no explanations, no markdown fences.
 
-Analyze the user's shopping query and return a valid JSON object with the following fields:
+## CRITICAL RULES — YOU MUST FOLLOW THESE:
+- NEVER invent product names, model numbers, brand names, prices, or specifications.
+- Include a brand in `brand_preference` ONLY if the user explicitly mentions it.
+- Include a `budget` value ONLY if the user explicitly states a price limit. Otherwise null.
+- Set `occasion` to null unless the user explicitly mentions an occasion.
+- Set `style` to null unless the user explicitly mentions a style.
+- Keywords and search_queries must be GENERIC (e.g., "budget smartphone" not "Xiaomi Redmi Note 13").
+- Do NOT add model numbers or specific product identifiers to keywords.
+- Generate exactly 10 keywords and exactly 5 search queries.
+
+Analyze the user's shopping query and return a valid JSON object with ALL of the following fields:
+
 1. `intent` — one of: RECOMMEND, COMPARE, FOLLOW_UP, BUNDLE, GENERAL, EXPLAIN, GREETING
-2. `category` — canonical category: smartphones, laptops, fashion, beauty, footwear, home_appliances, electronics, or other
-3. `subcategory` — specific product subcategory (e.g. mobile_phones, casual_tshirts, running_shoes, face_cream, etc.)
-4. `budget` — maximum price limit if specified (integer in INR, or null if not specified)
-5. `occasion` — usage occasion (e.g., Goa trip, gym, wedding, office, daily, or null)
-6. `style` — style profile (e.g. oversized, casual, formal, traditional, sporty, or null)
-7. `brand_preference` — list of preferred brands mentioned (e.g., ["Apple", "Samsung"] or empty list [])
-8. `keywords` — list of approximately 10 optimized search keywords
-9. `search_queries` — list of 5 to 10 optimized shopping search query phrases (e.g., "Best smartphone under ₹30000")
+2. `category` — one of: smartphones, laptops, fashion, beauty, footwear, home_appliances, electronics, other
+3. `subcategory` — generic subcategory (e.g., mobile_phones, casual_tshirts, running_shoes, face_cream, general). Set to "{{category}}_general" if unsure.
+4. `budget` — integer in INR, or null. Set ONLY if user explicitly states a price.
+5. `occasion` — string or null. Set ONLY if user explicitly mentions one.
+6. `style` — string or null. Set ONLY if user explicitly mentions one.
+7. `brand_preference` — list of strings, or empty list. Include ONLY brands the user explicitly named.
+8. `keywords` — list of exactly 10 generic search keywords. Never include specific model names.
+9. `search_queries` — list of exactly 5 generic search query phrases.
 
 Example query: "I want a phone under ₹30,000"
 Expected response:
@@ -137,8 +173,8 @@ Expected response:
   "occasion": null,
   "style": null,
   "brand_preference": [],
-  "keywords": ["smartphones under 30000", "best budget phone", "30k smartphone", "5G phone under 30k"],
-  "search_queries": ["Best smartphone under ₹30000", "Camera phone under ₹30000"]
+  "keywords": ["budget smartphone", "phone under 30000", "affordable 5g phone", "best value phone", "camera phone 30000", "battery phone 30000", "smartphone deals", "mid range phone", "android phone 30000", "display phone 30000"],
+  "search_queries": ["best smartphone under 30000", "phone under 30000 india", "5g phone budget price", "camera phone under 30000", "buy smartphone online india"]
 }
 """
 
@@ -183,7 +219,6 @@ class KeywordService:
 
         # Local semantic intent classifier fallback
         try:
-            from backend.services.local_intent_classifier import LocalIntentClassifier
             pred = LocalIntentClassifier.instance().classify(user_message)
             if pred:
                 fallback_intent = self._fallback_intent(user_message)
@@ -301,7 +336,7 @@ class KeywordService:
                 user_message=self._escape_format(user_message),
             )
             messages = [
-                {"role": "system", "content": "You are an advanced shopping intent parser for an e-commerce assistant."},
+                {"role": "system", "content": "You are a precise shopping intent parser. You extract ONLY what the user explicitly states. NEVER invent brands, budgets, occasions, or styles. Set null for unspecified fields. Return valid JSON only."},
                 {"role": "user", "content": prompt},
             ]
             plog.info("  -> using context-aware prompt with %d chars of conversation history", len(conversation_context))
@@ -347,13 +382,13 @@ class KeywordService:
 
                 plog.info("  -> detailed intent category=%s | budget=%s | keywords=%d | queries=%d", 
                           parsed.get("category"), parsed.get("budget"), len(parsed.get("keywords", [])), len(parsed.get("search_queries", [])))
+                parsed["llm_success"] = True
                 return parsed
             except Exception as exc:
                 plog.warning("  -> LLM detailed intent parse failed: %s -- raw=%s", exc, raw[:200])
 
         # Local semantic intent classifier fallback
         try:
-            from backend.services.local_intent_classifier import LocalIntentClassifier
             pred = LocalIntentClassifier.instance().classify(user_message)
             if pred:
                 fallback_intent = self._fallback_intent(user_message)
@@ -405,12 +440,15 @@ class KeywordService:
                     "style": style,
                     "brand_preference": brands,
                     "keywords": keywords[:10],
-                    "search_queries": search_queries[:6]
+                    "search_queries": search_queries[:6],
+                    "llm_success": False
                 }
         except Exception as exc:
             plog.warning("  -> Local semantic fallback failed in detailed intent: %s", exc)
 
-        return self._fallback_detailed_intent(user_message)
+        res = self._fallback_detailed_intent(user_message)
+        res["llm_success"] = False
+        return res
 
     def _fallback_detailed_intent(self, user_message: str) -> Dict[str, Any]:
         category = self._fallback_category(user_message)

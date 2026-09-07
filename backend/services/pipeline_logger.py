@@ -1,11 +1,16 @@
 import logging
 import sys
+from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
-LOG_DIR = Path(__file__).resolve().parent.parent / "logs"
+from backend.settings import settings
+
+LOG_DIR = Path(settings.LOG_DIR_PATH)
 LOG_DIR.mkdir(exist_ok=True)
 
 _LOG_FILE = LOG_DIR / "pipeline.log"
+_MAX_LOG_BYTES = settings.LOG_MAX_BYTES
+_LOG_BACKUP_COUNT = settings.LOG_BACKUP_COUNT
 
 _logger_initialized = False
 
@@ -24,7 +29,7 @@ def get_pipeline_logger() -> logging.Logger:
         datefmt="%H:%M:%S",
     )
 
-    fh = logging.FileHandler(str(_LOG_FILE), mode="a", encoding="utf-8")
+    fh = RotatingFileHandler(str(_LOG_FILE), maxBytes=_MAX_LOG_BYTES, backupCount=_LOG_BACKUP_COUNT, encoding="utf-8")
     fh.setLevel(logging.DEBUG)
     fh.setFormatter(formatter)
     logger.addHandler(fh)
@@ -43,7 +48,7 @@ def get_pipeline_logger() -> logging.Logger:
     _logger_initialized = True
 
     logger.info("=" * 60)
-    logger.info("Pipeline logger started — log file: %s", _LOG_FILE)
+    logger.info("Pipeline logger started — log file: %s (max %d MB, %d backups)", _LOG_FILE, _MAX_LOG_BYTES // (1024 * 1024), _LOG_BACKUP_COUNT)
     logger.info("=" * 60)
 
     return logger
@@ -67,7 +72,7 @@ def get_apify_logger() -> logging.Logger:
         datefmt="%H:%M:%S",
     )
 
-    fh = logging.FileHandler(str(_APIFY_LOG_FILE), mode="a", encoding="utf-8")
+    fh = RotatingFileHandler(str(_APIFY_LOG_FILE), maxBytes=_MAX_LOG_BYTES, backupCount=_LOG_BACKUP_COUNT, encoding="utf-8")
     fh.setLevel(logging.DEBUG)
     fh.setFormatter(formatter)
     logger.addHandler(fh)

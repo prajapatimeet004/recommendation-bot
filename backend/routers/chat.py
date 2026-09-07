@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import time
 import asyncio
 from typing import Any, Dict, List, Optional, Set
 
@@ -13,18 +14,24 @@ from backend.schemas import ChatRequest, ChatResponse, Message, ResponseType, Se
 from backend.pipeline.shopping_pipeline import run_pipeline
 from backend.services.product_service import get_paginated, has_more, enrich_product, clear_pagination
 from backend.services.pipeline_logger import get_pipeline_logger
+from backend.settings import settings
 
 logger = logging.getLogger(__name__)
 plog = get_pipeline_logger()
 
 router = APIRouter()
 
+# Track running background discovery tasks per (session_id, query_hash) to prevent duplicates
+_pending_discovery_tasks: Dict[str, float] = {}
+_PENDING_TASK_TTL = settings.PENDING_TASK_TTL
+
 class ConnectionManager:
     def __init__(self):
         self.active_connections: Dict[str, Set[asyncio.Queue]] = {}
+        self._MAX_QUEUE_SIZE = settings.SSE_MAX_QUEUE_SIZE
 
     def get_queue(self, session_id: str) -> asyncio.Queue:
-        queue = asyncio.Queue()
+        queue = asyncio.Queue(maxsize=self._MAX_QUEUE_SIZE)
         if session_id not in self.active_connections:
             self.active_connections[session_id] = set()
         self.active_connections[session_id].add(queue)
@@ -39,7 +46,11 @@ class ConnectionManager:
     async def broadcast(self, session_id: str, data: dict):
         if session_id in self.active_connections:
             for queue in list(self.active_connections[session_id]):
-                await queue.put(data)
+                try:
+                    await asyncio.wait_for(queue.put(data), timeout=1.0)
+                except (asyncio.QueueFull, asyncio.TimeoutError):
+                    logger.warning("Dropping slow SSE client for session %s", session_id)
+                    self.disconnect(session_id, queue)
 
 manager = ConnectionManager()
 
@@ -67,8 +78,11 @@ async def chat_stream(session_id: str):
         queue = manager.get_queue(session_id)
         try:
             while True:
-                data = await queue.get()
-                yield f"data: {json.dumps(data)}\n\n"
+                try:
+                    data = await asyncio.wait_for(queue.get(), timeout=30.0)
+                    yield f"data: {json.dumps(data)}\n\n"
+                except asyncio.TimeoutError:
+                    yield f"data: {json.dumps({'type': 'heartbeat'})}\n\n"
         except asyncio.CancelledError:
             pass
         finally:
@@ -105,16 +119,22 @@ async def chat_endpoint(
         generated_response = result.get("generated_response")
         comparison = result.get("comparison")
 
-        # Automatically start the background product discovery task
-        if intent in ("RECOMMEND", "COMPARE", "FOLLOW_UP", "BUNDLE") and request.activeChatId and result.get("run_background_discovery", True):
+        # Automatically start the background product discovery task (deduplicated)
+        if result.get("run_background_discovery", False) and request.activeChatId:
             from backend.services.discovery_task import discover_and_update_products_task
             combined_query = _get_combined_query(request)
-            background_tasks.add_task(
-                discover_and_update_products_task,
-                session_id=request.activeChatId,
-                query=combined_query,
-                intent=detailed_intent
-            )
+            task_key = f"{request.activeChatId}:{hash(combined_query)}"
+            now = time.time()
+            if task_key in _pending_discovery_tasks and now < _pending_discovery_tasks[task_key]:
+                logger.info("Skipping duplicate background discovery for session %s", request.activeChatId)
+            else:
+                _pending_discovery_tasks[task_key] = now + _PENDING_TASK_TTL
+                background_tasks.add_task(
+                    discover_and_update_products_task,
+                    session_id=request.activeChatId,
+                    query=combined_query,
+                    intent=detailed_intent
+                )
 
         keyword_str = ", ".join(keywords[:5]) if keywords else request.message
 
@@ -147,20 +167,25 @@ async def _handle_pagination(request: ChatRequest, page_token: str, background_t
     # Use the combined context-aware query for pagination
     query = _get_combined_query(request)
 
-    # Trigger background search on Apify for pagination
+    # Trigger background search on Apify for pagination (deduplicated)
     if session_id:
         try:
             from backend.services.keyword_service import KeywordService
             from backend.services.discovery_task import discover_and_update_products_task
-            kw_service = KeywordService()
-            detailed_intent = kw_service.extract_detailed_intent(query)
-            
-            background_tasks.add_task(
-                discover_and_update_products_task,
-                session_id=session_id,
-                query=query,
-                intent=detailed_intent
-            )
+            task_key = f"{session_id}:{hash(query)}"
+            now = time.time()
+            if task_key in _pending_discovery_tasks and now < _pending_discovery_tasks[task_key]:
+                logger.info("Skipping duplicate pagination discovery for session %s", session_id)
+            else:
+                _pending_discovery_tasks[task_key] = now + _PENDING_TASK_TTL
+                kw_service = KeywordService()
+                detailed_intent = kw_service.extract_detailed_intent(query)
+                background_tasks.add_task(
+                    discover_and_update_products_task,
+                    session_id=session_id,
+                    query=query,
+                    intent=detailed_intent
+                )
         except Exception as e:
             logger.warning("Failed to queue background discovery task for pagination: %s", e)
 
@@ -177,20 +202,33 @@ async def _handle_pagination(request: ChatRequest, page_token: str, background_t
 
         # Directly retrieve from ChromaDB category collections
         from backend.pipeline.shopping_pipeline import _vector_service, _recommendation_service, _apply_keyword_scores, parse_budget
-        db_products = await _vector_service.search_all_collections([predicted_cat], query, n=offset + 6)
+        from backend.services.keyword_service import detect_gender
+        
+        detailed_intent = kw_service.extract_detailed_intent(query)
+        keywords = detailed_intent.get("keywords", [])
+        budget = detailed_intent.get("budget") or parse_budget(query)
+        gender = detailed_intent.get("gender") or detect_gender(query)
+        brand_pref = detailed_intent.get("brand_preference", [])
+
+        db_products = await _vector_service.search_all_collections(
+            [predicted_cat], 
+            query, 
+            n=offset + 6,
+            budget=budget,
+            gender=gender,
+            brand_preference=brand_pref
+        )
         
         # Apply keyword re-scoring & re-ranking to be consistent
-        analysis = kw_service.analyze(query)
-        keywords = analysis.get("keywords", [])
         _apply_keyword_scores(db_products, keywords)
         
         # Rank with budget
-        budget = parse_budget(query)
         ranked = _recommendation_service.rank(db_products, query=query, budget=budget)
         
         chunk = ranked[offset:offset + 3]
         more_available = len(ranked) > offset + 3
         next_products = [enrich_product(p) for p in chunk]
+
 
     return ChatResponse(
         message=f"Showing more products for '{request.message}'.",

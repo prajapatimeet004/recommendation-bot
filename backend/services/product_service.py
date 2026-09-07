@@ -2,13 +2,31 @@ from __future__ import annotations
 
 import hashlib
 import logging
+import time
 from typing import Any, Dict, List, Optional
 
 from backend.models.product import ProductOutput
+from backend.settings import settings
 
 logger = logging.getLogger(__name__)
 
 _PAGINATION_STORE: Dict[str, List[Dict[str, Any]]] = {}
+_PAGINATION_TTL: Dict[str, float] = {}
+PAGINATION_TTL_SECONDS = settings.PAGINATION_TTL_SECONDS
+_MAX_PAGINATION_ENTRIES = settings.PAGINATION_MAX_ENTRIES
+
+
+def _prune_expired() -> None:
+    now = time.time()
+    expired = [k for k, t in _PAGINATION_TTL.items() if t < now]
+    for k in expired:
+        _PAGINATION_STORE.pop(k, None)
+        _PAGINATION_TTL.pop(k, None)
+    # Enforce max size by evicting oldest entries
+    while len(_PAGINATION_STORE) > _MAX_PAGINATION_ENTRIES:
+        oldest = min(_PAGINATION_TTL, key=lambda k: _PAGINATION_TTL[k])
+        _PAGINATION_STORE.pop(oldest, None)
+        _PAGINATION_TTL.pop(oldest, None)
 
 
 def _make_key(session_id: str, query: str) -> str:
@@ -17,12 +35,15 @@ def _make_key(session_id: str, query: str) -> str:
 
 
 def store_pagination(session_id: str, query: str, products: List[Dict[str, Any]]) -> str:
+    _prune_expired()
     key = _make_key(session_id, query)
     _PAGINATION_STORE[key] = list(products)
+    _PAGINATION_TTL[key] = time.time() + PAGINATION_TTL_SECONDS
     return key
 
 
 def get_paginated(session_id: str, query: str, page_token: str, page_size: int = 3) -> List[ProductOutput]:
+    _prune_expired()
     key = _make_key(session_id, query)
     products = _PAGINATION_STORE.get(key, [])
     try:
@@ -34,6 +55,7 @@ def get_paginated(session_id: str, query: str, page_token: str, page_size: int =
 
 
 def has_more(session_id: str, query: str, page_token: str) -> bool:
+    _prune_expired()
     key = _make_key(session_id, query)
     products = _PAGINATION_STORE.get(key, [])
     try:
@@ -44,8 +66,10 @@ def has_more(session_id: str, query: str, page_token: str) -> bool:
 
 
 def clear_pagination(session_id: str, query: str) -> None:
+    _prune_expired()
     key = _make_key(session_id, query)
     _PAGINATION_STORE.pop(key, None)
+    _PAGINATION_TTL.pop(key, None)
 
 def clean_product_image_url(url: str, category: Optional[str] = None) -> str:
     # Default premium high-quality placeholders

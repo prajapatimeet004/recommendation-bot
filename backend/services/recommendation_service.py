@@ -6,10 +6,11 @@ from typing import Any, Dict, List, Optional
 logger = logging.getLogger(__name__)
 
 WEIGHTS = {
-    "semantic_similarity": 0.4,
-    "price_relevance": 0.3,
-    "rating": 0.2,
-    "completeness": 0.1,
+    "semantic_similarity": 0.60,
+    "price_relevance": 0.15,
+    "rating": 0.10,
+    "completeness": 0.05,
+    "brand_match": 0.10,
 }
 
 
@@ -19,6 +20,7 @@ class RecommendationService:
         products: List[Dict[str, Any]],
         query: str = "",
         budget: Optional[float] = None,
+        brand_preference: Optional[List[str]] = None,
     ) -> List[Dict[str, Any]]:
         # Deduplicate products by id/url before scoring
         seen = set()
@@ -33,35 +35,22 @@ class RecommendationService:
                 seen.add(pid)
                 deduped.append(p)
 
-        # Strict gender filtering
-        from backend.services.keyword_service import detect_gender
-        intent_gender = detect_gender(query)
-        if intent_gender in ("men", "women"):
-            filtered_by_gender = []
-            for p in deduped:
-                p_gender = self._detect_product_gender(p)
-                if intent_gender == "men" and p_gender == "women":
-                    continue
-                if intent_gender == "women" and p_gender == "men":
-                    continue
-                filtered_by_gender.append(p)
-            deduped = filtered_by_gender
+        # Gender filtering is handled by the pipeline and vector_service at search time
 
         scored = []
         for p in deduped:
-            score = self._compute_score(p, query, budget)
+            score = self._compute_score(p, query, budget, brand_preference)
             p["_composite_score"] = round(score, 4)
-            if p["_composite_score"] >= 0.1:
-                scored.append(p)
+            scored.append(p)
 
         scored.sort(key=lambda x: x["_composite_score"], reverse=True)
         return scored
 
-    def top_n(self, products: List[Dict[str, Any]], n: int = 3, query: str = "", budget: Optional[float] = None) -> List[Dict[str, Any]]:
-        ranked = self.rank(products, query, budget)
+    def top_n(self, products: List[Dict[str, Any]], n: int = 3, query: str = "", budget: Optional[float] = None, brand_preference: Optional[List[str]] = None) -> List[Dict[str, Any]]:
+        ranked = self.rank(products, query, budget, brand_preference)
         return ranked[:n]
 
-    def _compute_score(self, product: Dict[str, Any], query: str, budget: Optional[float]) -> float:
+    def _compute_score(self, product: Dict[str, Any], query: str, budget: Optional[float], brand_preference: Optional[List[str]] = None) -> float:
         total = 0.0
 
         sim = product.get("_score", 0) or product.get("score", 0) or 0
@@ -79,6 +68,9 @@ class RecommendationService:
         completeness = self._completeness(product)
         total += completeness * WEIGHTS["completeness"]
 
+        brand_rel = self._brand_match(product, brand_preference)
+        total += brand_rel * WEIGHTS["brand_match"]
+
         return total
 
     def _price_relevance(self, product: Dict[str, Any], budget: Optional[float]) -> float:
@@ -86,7 +78,7 @@ class RecommendationService:
         if not price or not isinstance(price, (int, float)):
             return 0.5
         if not budget:
-            return 0.8
+            return 0.0
         if price <= budget:
             ratio = price / budget
             category = product.get("category", "").lower()
@@ -142,6 +134,14 @@ class RecommendationService:
         description = product.get("description", "").lower()
         text = f"{name} {description}"
 
+        # Strip known non-gendered words that could trigger false positives
+        text = re.sub(
+            r'\b(manager(s)?|manual(s)?|permanent|human(s)?|snowman|cameraman|fireman|postman|handyman|fisherman|watchman)\b',
+            '',
+            text,
+            flags=re.IGNORECASE
+        )
+
         has_men = bool(re.search(r'\b(men|mens|male|boy|boys|gents|gentlemen|his|man|guy|guys)\b', text))
         has_women = bool(re.search(r'\b(women|womens|female|girl|girls|ladies|lady|her|woman|gal)\b', text))
 
@@ -152,4 +152,17 @@ class RecommendationService:
         if has_women:
             return "women"
         return None
+
+    def _brand_match(self, product: Dict[str, Any], brand_preference: Optional[List[str]]) -> float:
+        if not brand_preference:
+            return 0.0
+        product_brand = (product.get("brand") or "").lower().strip()
+        if not product_brand:
+            return 0.0
+        for preferred in brand_preference:
+            if preferred.lower().strip() == product_brand:
+                return 1.0
+            if preferred.lower().strip() in product_brand or product_brand in preferred.lower().strip():
+                return 0.8
+        return 0.0
 

@@ -5,8 +5,6 @@ __all__ = [
     "TavilyResult",
     "extract_intent",
     "SUPPORTED_DOMAINS",
-    "ExtractionService",
-    "ProductCache",
     "KeywordService",
     "parse_product",
     "parse_products",

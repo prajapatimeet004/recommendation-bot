@@ -1,7 +1,7 @@
 import logging
 import asyncio
 import numpy as np
-from typing import Dict, Any, List
+from typing import Dict, Any, List, Optional
 
 from backend.services.apify_service import ApifyService
 from backend.services.embedding_service import EmbeddingService
@@ -30,10 +30,13 @@ async def discover_and_update_products_task(
         # 2. Get query embedding for semantic similarity calculations
         query_embedding = embedding_service.generate(query)
 
-        # 3. Score and validate products
+        # 3. Batch compute all product embeddings then score and validate
+        doc_texts = [embedding_service.build_embedding_text(p) for p in raw_products]
+        product_embeddings = embedding_service.generate_batch(doc_texts) if doc_texts else []
+
         accepted_products = []
-        for p in raw_products:
-            score = calculate_relevance_score(p, intent, query_embedding)
+        for p, prod_emb in zip(raw_products, product_embeddings):
+            score = calculate_relevance_score(p, intent, query_embedding, product_embedding=prod_emb)
             p["_relevance_score"] = score
             if score >= 0.6:
                 accepted_products.append(p)
@@ -45,9 +48,10 @@ async def discover_and_update_products_task(
             logger.info("No discovered products passed the relevance threshold.")
             return
 
-        # 4. Deduplicate accepted products within this batch and against database
+        # 4. Deduplicate accepted products — in-batch first, then batch DB check
         new_products = []
         seen_in_batch = set()
+        products_by_category: Dict[str, List[Dict]] = {}
         for p in accepted_products:
             pid = p.get("id") or p.get("product_url") or p.get("url")
             if not pid:
@@ -58,19 +62,27 @@ async def discover_and_update_products_task(
             if pid in seen_in_batch:
                 continue
             seen_in_batch.add(pid)
+            cat = p.get("category", "other")
+            products_by_category.setdefault(cat, []).append({"pid": pid, "product": p})
 
-            is_duplicate = False
+        # Batch-check existence for each category in one DB call
+        existing_ids: set = set()
+        for cat, items in products_by_category.items():
+            pids = [it["pid"] for it in items]
             try:
-                col = vector_service.get_collection(p["category"])
-                existing = col.get(ids=[pid])
-                if existing and existing.get("ids"):
-                    is_duplicate = True
-                    logger.info("  -> DUPLICATE (by ID) found in database: %s", p.get("name"))
+                col = vector_service.get_collection(cat)
+                result = col.get(ids=pids)
+                if result and result.get("ids"):
+                    existing_ids.update(result["ids"])
             except Exception as e:
-                logger.warning("Error checking duplicate for product %s: %s", pid, e)
+                logger.warning("Error batch-checking duplicates for category '%s': %s", cat, e)
 
-            if not is_duplicate:
-                new_products.append(p)
+        for items in products_by_category.values():
+            for it in items:
+                if it["pid"] not in existing_ids:
+                    new_products.append(it["product"])
+                else:
+                    logger.info("  -> DUPLICATE (by ID) found in database: %s", it["product"].get("name"))
 
         if not new_products:
             logger.info("All accepted products are already in the database.")
@@ -106,7 +118,8 @@ async def discover_and_update_products_task(
 def calculate_relevance_score(
     product: Dict[str, Any],
     intent: Dict[str, Any],
-    query_embedding: List[float]
+    query_embedding: List[float],
+    product_embedding: Optional[List[float]] = None,
 ) -> float:
     # Strict gender filtering
     intent_gender = intent.get("gender")
@@ -211,9 +224,12 @@ def calculate_relevance_score(
     if total_occ_style > 0:
         occ_style_score = matched_occ_style / total_occ_style
 
-    # 6. Semantic similarity
-    doc_text = embedding_service.build_embedding_text(product)
-    prod_emb = embedding_service.generate(doc_text)
+    # 6. Semantic similarity (use pre-computed embedding if provided, else fallback)
+    if product_embedding is not None:
+        prod_emb = product_embedding
+    else:
+        doc_text = embedding_service.build_embedding_text(product)
+        prod_emb = embedding_service.generate(doc_text)
 
     dot_product = np.dot(query_embedding, prod_emb)
     norm_query = np.linalg.norm(query_embedding)

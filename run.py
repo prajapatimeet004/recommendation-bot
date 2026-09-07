@@ -4,6 +4,26 @@ import os
 import time
 import shutil
 
+
+def free_port(port):
+    if os.name != 'nt':
+        return
+    try:
+        result = subprocess.run(
+            ["netstat", "-ano"], capture_output=True, text=True, creationflags=subprocess.CREATE_NO_WINDOW
+        )
+        for line in result.stdout.splitlines():
+            parts = line.strip().split()
+            if len(parts) >= 5 and f":{port}" in parts[1] and parts[3] != "0.0.0.0:0":
+                pid = parts[4]
+                subprocess.run(
+                    ["taskkill", "/F", "/PID", pid],
+                    capture_output=True, creationflags=subprocess.CREATE_NO_WINDOW
+                )
+                print(f"[*] Killed process {pid} using port {port}")
+    except Exception:
+        pass
+
 def setup_and_run():
     # Root path
     root_dir = os.path.dirname(os.path.abspath(__file__))
@@ -90,9 +110,11 @@ def setup_and_run():
     print("      Starting Backend & Frontend Servers      ")
     print("=" * 60)
 
-    # Start backend process using .venv python
-    backend_cmd = [sys.executable, "-m", "uvicorn", "backend.main:app", "--host", "0.0.0.0", "--port", "8000", "--reload"]
-    print("[*] Launching backend on http://localhost:8000 ...")
+    # Free the port if in use, then start backend
+    backend_port = int(os.environ.get("BACKEND_PORT", "8000"))
+    free_port(backend_port)
+    backend_cmd = [sys.executable, "-m", "uvicorn", "backend.main:app", "--host", "0.0.0.0", "--port", str(backend_port), "--reload"]
+    print(f"[*] Launching backend on http://localhost:{backend_port} ...")
     backend_process = subprocess.Popen(
         backend_cmd,
         cwd=root_dir
@@ -107,9 +129,9 @@ def setup_and_run():
     )
     
     print("\n[+] Both backend and frontend are running!")
-    print("👉 Frontend: http://localhost:5173")
-    print("👉 Backend: http://localhost:8000")
-    print("👉 API Documentation: http://localhost:8000/docs")
+    print(f"👉 Frontend: http://localhost:5173")
+    print(f"👉 Backend: http://localhost:{backend_port}")
+    print(f"👉 API Documentation: http://localhost:{backend_port}/docs")
     print("👉 Press Ctrl+C to stop both servers safely.\n")
     
     try:

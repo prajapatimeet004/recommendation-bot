@@ -849,6 +849,67 @@ function App() {
                   </div>
                 )}
 
+                {/* Strengths Section */}
+                {activeComparison.strengths && (
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    <div className="p-4 rounded-xl bg-emerald-950/20 border border-emerald-500/20">
+                      <h4 className="text-emerald-400 font-bold text-sm mb-2">
+                        {activeComparison.products?.[0]?.name || 'Product A'} Strengths
+                      </h4>
+                      {(activeComparison.strengths.product_a || []).length > 0 ? (
+                        <ul className="space-y-1">
+                          {activeComparison.strengths.product_a.map((s, i) => (
+                            <li key={i} className="text-slate-300 text-xs flex items-start gap-2">
+                              <span className="text-emerald-400 mt-0.5">◆</span> {s}
+                            </li>
+                          ))}
+                        </ul>
+                      ) : (
+                        <p className="text-slate-500 text-xs italic">No clear advantages</p>
+                      )}
+                    </div>
+                    <div className="p-4 rounded-xl bg-indigo-950/20 border border-indigo-500/20">
+                      <h4 className="text-indigo-400 font-bold text-sm mb-2">
+                        {activeComparison.products?.[1]?.name || 'Product B'} Strengths
+                      </h4>
+                      {(activeComparison.strengths.product_b || []).length > 0 ? (
+                        <ul className="space-y-1">
+                          {activeComparison.strengths.product_b.map((s, i) => (
+                            <li key={i} className="text-slate-300 text-xs flex items-start gap-2">
+                              <span className="text-indigo-400 mt-0.5">◆</span> {s}
+                            </li>
+                          ))}
+                        </ul>
+                      ) : (
+                        <p className="text-slate-500 text-xs italic">No clear advantages</p>
+                      )}
+                    </div>
+                  </div>
+                )}
+
+                {/* Best Choice Banner */}
+                {activeComparison.best_choice && (
+                  <div className={`p-4 rounded-xl border text-center ${
+                    activeComparison.best_choice === 'Product A'
+                      ? 'bg-emerald-950/20 border-emerald-500/20'
+                      : activeComparison.best_choice === 'Product B'
+                        ? 'bg-indigo-950/20 border-indigo-500/20'
+                        : 'bg-amber-950/20 border-amber-500/20'
+                  }`}>
+                    <span className={`font-bold text-sm ${
+                      activeComparison.best_choice === 'Product A'
+                        ? 'text-emerald-400'
+                        : activeComparison.best_choice === 'Product B'
+                          ? 'text-indigo-400'
+                          : 'text-amber-400'
+                    }`}>
+                      {activeComparison.best_choice === 'Depends on your needs'
+                        ? '⚖️ Recommendation: Depends on your needs — review the specs above'
+                        : `Best Choice: ${activeComparison.best_choice}`}
+                    </span>
+                  </div>
+                )}
+
                 {/* Specs Table Matrix */}
                 <div className="border border-slate-800 rounded-2xl overflow-hidden bg-slate-900/20">
                   <div className="bg-slate-900/50 p-4 border-b border-slate-800 flex items-center justify-between">

@@ -31,3 +31,5 @@ backend/logs/*.log
 .vscode/
 .idea/
 .DS_Store
+
+.env

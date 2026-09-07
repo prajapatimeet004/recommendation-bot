@@ -1,68 +1,216 @@
+import json
 import os
+import re
 import httpx
 import logging
 import asyncio
+import time
 from typing import List, Dict, Any, Optional
 from urllib.parse import quote
 
+try:
+    import certifi
+    _SSL_VERIFY = certifi.where()
+except Exception:
+    _SSL_VERIFY = True
+
 from backend.services.pipeline_logger import get_apify_logger
+from backend.services.tavily_service import _resolve_source
+from backend.services.regex_parser import _BRAND_PATTERN
+from backend.settings import settings
 
 logger = get_apify_logger()
 
 class ApifyService:
     def __init__(self):
         self.api_token = os.environ.get("APIFY_API_TOKEN", "").strip()
+        self.serpapi_key = os.environ.get("SERPAPI_API_KEY", "").strip()
 
     async def discover_products(self, intent: Dict[str, Any]) -> List[Dict[str, Any]]:
-        # 1. Check if token is available
-        if not self.api_token:
-            logger.info("APIFY_API_TOKEN not found in environment. Running simulation fallback.")
+        # Use SerpAPI for Google Shopping search
+        if not self.serpapi_key:
+            logger.warning("SERPAPI_API_KEY not found in environment. Running simulation fallback.")
             return await self._simulate_discovery(intent)
 
-        # 2. Generate search URLs based on search_queries
         queries = intent.get("search_queries", [])
         if not queries:
             queries = [intent.get("subcategory", "products")]
 
-        urls = []
-        for q in queries[:4]:  # Limit to top 4 queries to keep it fast
-            encoded_q = quote(q)
-            # Add Amazon
-            urls.append(f"https://www.amazon.in/s?k={encoded_q}")
-            # Add Flipkart
-            urls.append(f"https://www.flipkart.com/search?q={encoded_q}")
-            # Add Croma
-            urls.append(f"https://www.croma.com/search/?text={encoded_q}")
+        logger.info("SerpAPI product discovery started with %d search query(ies)", len(queries))
 
-        logger.info("Apify product discovery started with %d search URL(s)", len(urls))
+        all_products = []
+        seen_ids = set()
 
-        input_data = {
-            "listingUrls": [{"url": url} for url in urls],
-            "maxProductResults": 10,
-            "scrapeMode": "AUTO"
-        }
+        for query in queries[:3]:  # Limit to top 3 queries
+            try:
+                search_params = {
+                    "engine": "google_shopping",
+                    "q": query,
+                    "api_key": self.serpapi_key,
+                    "num": 10,
+                    "gl": "in",  # Google country: India
+                    "hl": "en",  # Language: English
+                }
 
-        # Call Apify actor synchronously (run act and get dataset items)
-        # Using the actor 'apify/e-commerce-scraping-tool'
-        actor_id = "apify~e-commerce-scraping-tool"
-        run_url = f"https://api.apify.com/v2/acts/{actor_id}/run-sync-get-dataset-items?token={self.api_token}"
+                try:
+                    async with httpx.AsyncClient(timeout=30.0, verify=_SSL_VERIFY, http2=False) as client:
+                        resp = await client.get("https://serpapi.com/search", params=search_params)
+                except (httpx.ConnectError, httpx.RemoteProtocolError):
+                    logger.warning("SSL verification failed for serpapi.com — retrying with verify=False")
+                    async with httpx.AsyncClient(timeout=30.0, verify=False, http2=False) as client:
+                        resp = await client.get("https://serpapi.com/search", params=search_params)
+                logger.info("SerpAPI call completed for query '%s'. Status code: %d", query, resp.status_code)
 
-        try:
-            async with httpx.AsyncClient(timeout=45.0) as client:
-                resp = await client.post(run_url, json=input_data)
-                logger.info("Apify REST call completed. Status code: %d", resp.status_code)
-                if resp.status_code in (200, 201):
-                    items = resp.json()
-                    if isinstance(items, list):
-                        logger.info("Apify successfully crawled %d product(s)", len(items))
-                        if items:
-                            logger.info("Preview of first scraped product: %s", str(items[0])[:500])
-                        return self._normalize_apify_items(items, intent.get("category", "other"))
-                logger.warning("Apify actor run returned status %d. Falling back to simulation.", resp.status_code)
-        except Exception as e:
-            logger.exception("Apify actor execution failed: %s. Falling back to simulation.", e)
+                if resp.status_code == 200:
+                    data = resp.json()
+                    items = data.get("shopping_results", [])
+                    logger.info("SerpAPI returned %d shopping results for query '%s'", len(items), query)
+
+                    normalized = self._normalize_serpapi_items(items, intent.get("category", "other"))
+                    for p in normalized:
+                        pid = p.get("id")
+                        if pid and pid not in seen_ids:
+                            seen_ids.add(pid)
+                            all_products.append(p)
+                elif resp.status_code == 401:
+                    logger.error("SerpAPI returned 401 Unauthorized — API key is invalid. Update SERPAPI_API_KEY in backend/.env")
+                else:
+                    logger.warning("SerpAPI returned status %d for query '%s': %s", resp.status_code, query, resp.text[:200])
+            except Exception as e:
+                logger.exception("SerpAPI search failed for query '%s': %s", query, e)
+
+        if all_products:
+            logger.info("SerpAPI discovery completed with %d unique product(s)", len(all_products))
+            if all_products:
+                logger.info("Preview of first product: %s", str(all_products[0])[:500])
+            return all_products
 
         return await self._simulate_discovery(intent)
+
+    # ======================================================================
+    # APIFY CODE (commented out — kept for reference)
+    # ======================================================================
+    # async def _discover_via_apify(self, intent: Dict[str, Any]) -> Optional[List[Dict[str, Any]]]:
+    #     """Original Apify-based discovery. Kept for reference."""
+    #     if not self.api_token:
+    #         return None
+    #     queries = intent.get("search_queries", [])
+    #     if not queries:
+    #         queries = [intent.get("subcategory", "products")]
+    #     urls = []
+    #     for q in queries[:4]:
+    #         encoded_q = quote(q)
+    #         urls.append(f"https://www.amazon.in/s?k={encoded_q}")
+    #         urls.append(f"https://www.flipkart.com/search?q={encoded_q}")
+    #         urls.append(f"https://www.croma.com/search/?text={encoded_q}")
+    #     logger.info("Apify product discovery started with %d search URL(s)", len(urls))
+    #     input_data = {
+    #         "listingUrls": [{"url": url} for url in urls],
+    #         "maxProductResults": 10,
+    #         "scrapeMode": "AUTO"
+    #     }
+    #     actor_id = settings.APIFY_ACTOR_ID
+    #     run_url = f"https://api.apify.com/v2/acts/{actor_id}/run-sync-get-dataset-items"
+    #     max_retries = 3
+    #     for attempt in range(max_retries):
+    #         try:
+    #             async with httpx.AsyncClient(timeout=45.0) as client:
+    #                 headers = {"Authorization": f"Bearer {self.api_token}"}
+    #                 resp = await client.post(run_url, json=input_data, headers=headers)
+    #                 logger.info("Apify REST call completed (attempt %d/%d). Status code: %d", attempt + 1, max_retries, resp.status_code)
+    #                 if resp.status_code in (200, 201):
+    #                     items = resp.json()
+    #                     if isinstance(items, list):
+    #                         logger.info("Apify successfully crawled %d product(s)", len(items))
+    #                         if items:
+    #                             logger.info("Preview of first scraped product: %s", str(items[0])[:500])
+    #                         return self._normalize_apify_items(items, intent.get("category", "other"))
+    #                 if resp.status_code in (429, 502, 503, 504) and attempt < max_retries - 1:
+    #                     backoff = 2 ** attempt
+    #                     logger.warning("Apify returned status %d. Retrying in %ds...", resp.status_code, backoff)
+    #                     await asyncio.sleep(backoff)
+    #                     continue
+    #                 logger.warning("Apify actor run returned status %d. Falling back to simulation.", resp.status_code)
+    #                 break
+    #         except (httpx.TimeoutException, httpx.NetworkError) as e:
+    #             if attempt < max_retries - 1:
+    #                 backoff = 2 ** attempt
+    #                 logger.warning("Apify network error (attempt %d/%d): %s. Retrying in %ds...", attempt + 1, max_retries, e, backoff)
+    #                 await asyncio.sleep(backoff)
+    #                 continue
+    #             logger.exception("Apify actor execution failed after %d attempts: %s", max_retries, e)
+    #         except Exception as e:
+    #             logger.exception("Apify actor execution failed: %s. Falling back to simulation.", e)
+    #             break
+    #     return None
+
+    def _normalize_serpapi_items(self, items: List[Dict[str, Any]], default_cat: str) -> List[Dict[str, Any]]:
+        normalized = []
+        for item in items:
+            name = item.get("title") or ""
+            if not name:
+                continue
+
+            price_raw = item.get("price", "")
+            price = 0.0
+            if isinstance(price_raw, str):
+                cleaned = re.sub(r"[^\d.]", "", price_raw)
+                try:
+                    price = float(cleaned)
+                except ValueError:
+                    price = 0.0
+            elif isinstance(price_raw, (int, float)):
+                price = float(price_raw)
+
+            rating = item.get("rating")
+            if isinstance(rating, str):
+                rating = self._clean_number(rating)
+            elif not isinstance(rating, (int, float)):
+                rating = None
+
+            review_count = item.get("reviews")
+            if isinstance(review_count, str):
+                review_count = int(self._clean_number(review_count))
+            elif not isinstance(review_count, (int, float)):
+                review_count = 0
+            else:
+                review_count = int(review_count)
+
+            image_url = item.get("thumbnail") or ""
+            product_url = item.get("link") or item.get("product_link") or ""
+            source = item.get("source") or ""
+            if not source and product_url:
+                source = _resolve_source(product_url)
+
+            brand = item.get("merchant") or item.get("brand") or "Generic"
+            if isinstance(brand, str) and brand == "Generic":
+                brand_match = _BRAND_PATTERN.search(name)
+                if brand_match:
+                    brand = brand_match.group(1).capitalize()
+
+            description = item.get("description") or item.get("snippet") or ""
+
+            normalized.append({
+                "id": item.get("product_id") or product_url or f"serpapi-{abs(hash(name))}",
+                "name": name,
+                "brand": brand,
+                "category": default_cat,
+                "subcategory": f"{default_cat}_general",
+                "price": price,
+                "mrp": item.get("extracted_price", price) or price,
+                "discount": None,
+                "rating": rating,
+                "review_count": review_count,
+                "image_url": image_url,
+                "product_url": product_url,
+                "description": description,
+                "specifications": {},
+                "availability": item.get("availability", "In Stock"),
+                "seller": source or brand,
+                "source": source,
+            })
+        logger.debug("All SerpAPI normalized products (JSON format):\n%s", json.dumps(normalized, indent=2, default=str))
+        return normalized
 
     def _get_nested(self, item: Dict[str, Any], path: List[str]) -> Any:
         curr = item
@@ -113,7 +261,6 @@ class ApifyService:
             
             source = item.get("source") or item.get("website") or ""
             if not source and product_url:
-                from backend.services.tavily_service import _resolve_source
                 source = _resolve_source(product_url)
 
             description = item.get("description") or item.get("aboutThisItem") or ""
@@ -129,7 +276,6 @@ class ApifyService:
                 brand = brand.get("name") or "Generic"
 
             if brand == "Generic":
-                from backend.services.regex_parser import _BRAND_PATTERN
                 brand_match = _BRAND_PATTERN.search(name)
                 if brand_match:
                     brand = brand_match.group(1).capitalize()
@@ -153,12 +299,10 @@ class ApifyService:
                 "seller": item.get("seller") or brand,
                 "source": source
             })
-        import json
-        logger.info("All scraped & normalized products (JSON format):\n%s", json.dumps(normalized, indent=2, default=str))
+        logger.debug("All scraped & normalized products (JSON format):\n%s", json.dumps(normalized, indent=2, default=str))
         return normalized
 
     def _clean_number(self, val_str: str) -> float:
-        import re
         cleaned = re.sub(r"[^\d.]", "", val_str)
         try:
             return float(cleaned)
@@ -454,6 +598,5 @@ class ApifyService:
             p["availability"] = "In Stock"
             p["seller"] = p["brand"]
 
-        import json
-        logger.info("All simulated & normalized products (JSON format):\n%s", json.dumps(simulated, indent=2, default=str))
+        logger.debug("All simulated & normalized products (JSON format):\n%s", json.dumps(simulated, indent=2, default=str))
         return simulated
