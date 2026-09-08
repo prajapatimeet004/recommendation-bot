@@ -43,12 +43,12 @@ Analyze the user's message and return a valid JSON object with exactly three fie
 ## Category Definitions
 - smartphones: mobile phones only. NOT phone cases, chargers, or accessories.
 - laptops: notebooks, MacBooks, gaming laptops only.
-- fashion: clothing, shirts, t-shirts, jeans, dresses, sarees, jackets, hoodies.
+- fashion: clothing, shirts, t-shirts, jeans, dresses, sarees, jackets, hoodies. If the user mentions any clothing item, ALWAYS use "fashion" even if a trip/occasion is also mentioned.
 - beauty: cosmetics, skincare, lipstick, foundation, sunscreen, shampoo, moisturizer.
 - footwear: shoes, sneakers, sandals, boots, heels.
 - home_appliances: refrigerators, washing machines, air conditioners, TVs, microwave ovens only.
 - electronics: headphones, smartwatches, cameras, tablets, speaker systems, general tech accessories.
-- other: anything that does not fit the above categories, or spans multiple categories.
+- other: only for queries that truly do not fit any category above. Do NOT use "other" just because an occasion or trip is mentioned. If clothing items are mentioned, use "fashion".
 
 ## Examples
 
@@ -106,6 +106,16 @@ Return a valid JSON object with ALL of the following fields:
 7. `brand_preference` — list of strings, or empty list. Include ONLY brands the user explicitly named.
 8. `keywords` — list of exactly 10 generic search keywords.
 9. `search_queries` — list of exactly 5 generic search query phrases.
+
+## Category Definitions
+- smartphones: mobile phones only. NOT phone cases, chargers, or accessories.
+- laptops: notebooks, MacBooks, gaming laptops only.
+- fashion: clothing, shirts, t-shirts, jeans, dresses, sarees, jackets, hoodies. If the user mentions any clothing item, ALWAYS use "fashion" even if a trip/occasion is also mentioned.
+- beauty: cosmetics, skincare, lipstick, foundation, sunscreen, shampoo, moisturizer.
+- footwear: shoes, sneakers, sandals, boots, heels.
+- home_appliances: refrigerators, washing machines, air conditioners, TVs, microwave ovens only.
+- electronics: headphones, smartwatches, cameras, tablets, speaker systems, general tech accessories.
+- other: only for queries that truly do not fit any category above. Do NOT use "other" just because an occasion or trip is mentioned. If clothing items are mentioned, use "fashion".
 
 ## Intent Selection Rules
 - RECOMMEND: user asks for product suggestions. Default for shopping queries.

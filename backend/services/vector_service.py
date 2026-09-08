@@ -249,18 +249,7 @@ class VectorService:
         if not categories:
             categories = ["other"]
             
-        # Ensure 'other' and 'electronics' are searched as fallbacks if searching specific categories
-        seen = set()
-        search_categories = []
-        for cat in categories:
-            if cat not in seen:
-                seen.add(cat)
-                search_categories.append(cat)
-        for fallback in ["electronics", "other"]:
-            if fallback not in seen:
-                seen.add(fallback)
-                search_categories.append(fallback)
-
+        search_categories = list(dict.fromkeys(categories))
         tasks = [
             self.search_collection(
                 cat, 
@@ -289,3 +278,83 @@ class VectorService:
         # Sort combined results by similarity score (descending)
         all_products.sort(key=lambda x: x.get("_score", 0.0), reverse=True)
         return all_products[:n]
+
+    async def get_all_products(
+        self,
+        category: str,
+        limit: int = 500,
+        min_price: Optional[float] = None,
+        max_price: Optional[float] = None,
+        brands: Optional[List[str]] = None,
+    ) -> List[Dict[str, Any]]:
+        """Fetch ALL products from a collection without vector similarity search.
+
+        Uses ChromaDB's get() method — no embedding computation, no HNSW traversal.
+        Returns all products with full metadata, optionally filtered by price/brand.
+        """
+        loop = asyncio.get_running_loop()
+
+        @_retry_chroma()
+        def _sync_get():
+            col = self.get_collection(category)
+            if col.count() == 0:
+                return []
+
+            # Build optional metadata filters
+            where_clauses = []
+            if min_price is not None:
+                where_clauses.append({"price": {"$gte": float(min_price)}})
+            if max_price is not None:
+                where_clauses.append({"price": {"$lte": float(max_price)}})
+            if brands:
+                brand_list = [str(b).strip() for b in brands if str(b).strip()]
+                if brand_list:
+                    where_clauses.append({"brand": {"$in": brand_list}})
+
+            where = None
+            if len(where_clauses) == 1:
+                where = where_clauses[0]
+            elif len(where_clauses) > 1:
+                where = {"$and": where_clauses}
+
+            get_args = {
+                "include": ["metadatas"],
+            }
+            if where is not None:
+                get_args["where"] = where
+
+            results = col.get(**get_args)
+
+            metadatas = results.get("metadatas", [])
+            if not metadatas:
+                return []
+
+            products = []
+            for meta in metadatas:
+                try:
+                    specs = json.loads(meta.get("specs_json", "{}"))
+                except Exception:
+                    specs = {}
+
+                products.append({
+                    "id": meta.get("product_id"),
+                    "name": meta.get("name") or "",
+                    "brand": meta.get("brand"),
+                    "category": meta.get("category"),
+                    "gender": meta.get("gender", "unisex"),
+                    "price": float(meta.get("price") or 0.0) or None,
+                    "mrp": float(meta.get("mrp") or 0.0) or None,
+                    "discount": float(meta.get("discount") or 0.0) or None,
+                    "rating": float(meta.get("rating") or 0.0) or None,
+                    "specifications": specs,
+                    "description": meta.get("description", ""),
+                    "image": meta.get("image_url", ""),
+                    "url": meta.get("product_url", ""),
+                    "source": meta.get("website", ""),
+                    "availability": meta.get("availability"),
+                    "scraped_at": meta.get("scraped_at"),
+                })
+
+            return products[:limit] if limit else products
+
+        return await loop.run_in_executor(None, _sync_get)

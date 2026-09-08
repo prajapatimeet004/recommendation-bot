@@ -16,6 +16,8 @@ from backend.services.llm_gateway import gateway as _llm_gateway
 from backend.services.product_service import store_pagination, clear_pagination, enrich_product
 from backend.services.pipeline_logger import get_pipeline_logger
 from backend.services.spelling_service import SpellingService
+from backend.services.jina_reranker import JinaReranker
+from backend.settings import settings
 
 logger = logging.getLogger(__name__)
 plog = get_pipeline_logger()
@@ -25,6 +27,7 @@ _embedding_service = EmbeddingService()
 _vector_service = VectorService(embedding_service=_embedding_service)
 _recommendation_service = RecommendationService()
 _spelling_service = SpellingService()
+_jina_reranker = JinaReranker(embedding_service=_embedding_service)
 
 CATEGORY_FALLBACK_MAP = {
     "smartphones": ["smartphones", "electronics", "other"],
@@ -34,7 +37,7 @@ CATEGORY_FALLBACK_MAP = {
     "footwear": ["footwear", "fashion", "other"],
     "home_appliances": ["home_appliances", "electronics", "other"],
     "electronics": ["electronics", "smartphones", "laptops", "other"],
-    "other": ["other", "fashion", "electronics"],
+    "other": ["other", "fashion", "footwear"],
 }
 
 
@@ -61,6 +64,42 @@ You are a precise e-commerce sales assistant that answers ONLY from provided pro
 {user_message}
 
 Answer using ONLY the product details above. Be concise."""
+
+_GENERAL_QUERY_PROMPT = """\
+You are an e-commerce assistant that answers questions about the store's product catalog.
+
+## CRITICAL RULES:
+- ONLY use information from the ## Product Catalog section below.
+- NEVER invent prices, brands, specifications, ratings, or any product details.
+- If the catalog data doesn't contain enough information to answer, say: "I don't have enough product data to answer that question."
+- Keep your response under 3 sentences unless the user asks for more detail.
+- Be helpful and conversational. Mention specific product names, prices, and brands when relevant.
+
+## Product Catalog
+{product_catalog}
+
+## Current Question
+{user_message}
+
+Answer the question using ONLY the product catalog above. Be concise and helpful."""
+
+_EXPLAIN_PRODUCT_PROMPT = """\
+You are an e-commerce product expert. Answer questions about a specific product using the provided details.
+
+## CRITICAL RULES:
+- ONLY use information from the ## Product Details section below.
+- NEVER invent prices, brands, specifications, ratings, or any product details.
+- If a specification is not listed, say: "That specification is not available in our data."
+- Be helpful and conversational. Mention specific specs, features, and values when relevant.
+- Keep your response under 4 sentences unless the user asks for more detail.
+
+## Product Details
+{product_details}
+
+## User Question
+{user_message}
+
+Answer the question using ONLY the product details above. Be helpful and specific."""
 
 _COMPARISON_PROMPT = """\
 You are a precise e-commerce product comparison assistant.
@@ -201,12 +240,27 @@ async def run_pipeline(
             detailed_intent["intent"] = "FOLLOW_UP"
             
         if intent in ("GREETING", "GENERAL"):
+            if intent == "GREETING":
+                return {
+                    "intent": intent,
+                    "products": [],
+                    "keywords": keywords,
+                    "data_source": "none",
+                    "detailed_intent": detailed_intent,
+                }
+            # GENERAL in fallback mode: parse query and fetch products (no LLM response)
+            parsed_query = _parse_general_query(user_message)
+            general_products = await _fetch_general_query_products(parsed_query)
             return {
                 "intent": intent,
-                "products": [],
+                "products": general_products[:5] if general_products else [],
+                "all_products": general_products,
                 "keywords": keywords,
-                "data_source": "none",
+                "data_source": "local",
                 "detailed_intent": detailed_intent,
+                "run_background_discovery": False,
+                "generated_response": "Here are the results based on your query.",
+                "comparison": None,
             }
             
         budget = parse_budget(user_message)
@@ -256,10 +310,10 @@ async def run_pipeline(
                 )
                 seen_ids = {p["id"] for p in results}
                 for p in fallback_results:
-                    if p["id"] not in seen_ids:
+                    if p["id"] not in seen_ids and p.get("_score", 0) > 0.3:
                         results.append(p)
 
-        
+
         if not results:
             plog.info("  -> No results from fallback vector search")
             return {
@@ -273,11 +327,21 @@ async def run_pipeline(
             }
             
         plog.info("  -> Fallback vector search returned %d products", len(results))
-        
+
         _apply_keyword_scores(results, keywords)
         results.sort(key=lambda x: x.get("_score", 0.0), reverse=True)
+
+        if settings.JINA_RERANK_ENABLED and results:
+            plog.info("  -> Jina Reranker (fallback path)")
+            results = await _jina_reranker.rerank(query=user_message, products=results)
+            alpha = settings.JINA_RERANK_ALPHA
+            for p in results:
+                jina_s = p.get("_jina_score", 0.0)
+                existing_s = p.get("_score", 0.0)
+                p["_score"] = round(alpha * jina_s + (1 - alpha) * existing_s, 4)
+
         products = results
-        
+
         products = _recommendation_service.rank(products, query=user_message, budget=budget, brand_preference=brand_pref)
         top_products = products[:5]
         
@@ -303,14 +367,69 @@ async def run_pipeline(
         detailed_intent["intent"] = "FOLLOW_UP"
 
     if intent in ("GREETING", "GENERAL"):
-        plog.info("  -> Non-shopping intent=%s — returning empty pipeline", intent)
+        if intent == "GREETING":
+            plog.info("  -> GREETING intent — returning empty pipeline")
+            return {
+                "intent": intent,
+                "products": [],
+                "keywords": keywords,
+                "data_source": "none",
+                "detailed_intent": detailed_intent,
+            }
+
+        # GENERAL: parse query, fetch products, generate LLM response
+        plog.info("  -> GENERAL intent — parsing catalog query")
+        parsed_query = _parse_general_query(user_message)
+        plog.info("  -> Parsed query: metric=%s, direction=%s, category=%s",
+                   parsed_query["metric"], parsed_query["direction"], parsed_query["category"])
+
+        general_products = await _fetch_general_query_products(parsed_query)
+        plog.info("  -> Fetched %d products for general query", len(general_products))
+
+        generated_response = await _generate_general_response(
+            user_message, general_products, parsed_query
+        )
+        plog.info("  -> Generated general response: %s", (generated_response or "")[:100])
+
         return {
             "intent": intent,
-            "products": [],
+            "products": general_products[:5] if general_products else [],
+            "all_products": general_products,
             "keywords": keywords,
-            "data_source": "none",
+            "data_source": "local",
             "detailed_intent": detailed_intent,
+            "run_background_discovery": False,
+            "generated_response": generated_response,
+            "comparison": None,
         }
+
+    # EXPLAIN: answer product-specific questions
+    if intent == "EXPLAIN":
+        plog.info("  -> EXPLAIN intent — parsing product question")
+        product_name = _parse_product_name(user_message)
+        if product_name:
+            plog.info("  -> Extracted product name: '%s'", product_name)
+            explain_products = await _fetch_product_by_name(product_name)
+            plog.info("  -> Fetched %d products for explain query", len(explain_products))
+
+            generated_response = await _generate_explain_response(
+                user_message, explain_products
+            )
+            plog.info("  -> Generated explain response: %s", (generated_response or "")[:100])
+
+            return {
+                "intent": intent,
+                "products": explain_products[:3] if explain_products else [],
+                "all_products": explain_products,
+                "keywords": keywords,
+                "data_source": "local",
+                "detailed_intent": detailed_intent,
+                "run_background_discovery": False,
+                "generated_response": generated_response,
+                "comparison": None,
+            }
+        else:
+            plog.info("  -> EXPLAIN intent but no product name extracted. Falling through to vector search.")
 
     # COMPARE: extract entities before vector search
     if intent == "COMPARE":
@@ -320,6 +439,98 @@ async def run_pipeline(
             detailed_intent["_compare_entities"] = (item_a, item_b)
         else:
             plog.info("  -> COMPARE intent detected but no specific entities. Will use top-2 products.")
+
+    # SPECIAL HANDLING FOR COMPARE INTENT: Skip vector search, use recent products
+    if intent == "COMPARE":
+        plog.info("  -> COMPARE intent detected — skipping vector search, matching from recent products")
+        
+        # Get comparison entities from LLM extraction
+        compare_entities = detailed_intent.get("_compare_entities")
+        comparison_products = None
+        
+        if compare_entities and compare_entities[0] and compare_entities[1]:
+            item_a, item_b = compare_entities
+            plog.info("  -> Matching extracted entities against recent products: '%s' vs '%s'", item_a, item_b)
+            
+            # Try to match against recent products using fuzzy name matching
+            if recent_products and len(recent_products) >= 2:
+                from difflib import SequenceMatcher
+                
+                def _match_product_in_recent(target_name: str, candidates: list) -> dict | None:
+                    best_match = None
+                    best_score = 0.0
+                    for cand in candidates:
+                        cand_name = f"{cand.get('brand', '')} {cand.get('name', '')}".strip()
+                        score = SequenceMatcher(None, target_name.lower(), cand_name.lower()).ratio()
+                        if score > best_score:
+                            best_score = score
+                            best_match = cand
+                    # Threshold of 0.3 for fuzzy matching
+                    return best_match if best_score >= 0.3 else None
+                
+                prod_a = _match_product_in_recent(item_a, recent_products)
+                prod_b = _match_product_in_recent(item_b, recent_products)
+                
+                if prod_a and prod_b:
+                    comparison_products = [prod_a, prod_b]
+                    plog.info("  -> Matched both products from recent products (score >= 0.3)")
+                elif prod_a or prod_b:
+                    plog.info("  -> Matched only one product from recent products, will try DB fallback")
+        
+        # If not matched from recent products, try DB lookup
+        if not comparison_products and compare_entities and compare_entities[0] and compare_entities[1]:
+            item_a, item_b = compare_entities
+            plog.info("  -> Falling back to DB lookup for: '%s' vs '%s'", item_a, item_b)
+            prod_a, prod_b = await _retrieve_compare_products(
+                item_a, item_b, predicted_category, query_embedding,
+            )
+            if prod_a and prod_b:
+                comparison_products = [prod_a, prod_b]
+                plog.info("  -> Both products found via DB lookup")
+            elif prod_a or prod_b:
+                # Use found product + first recent product as fallback
+                found = prod_a or prod_b
+                fallback = recent_products[0] if recent_products else None
+                if fallback and found.get("id") != fallback.get("id"):
+                    comparison_products = [found, fallback]
+                    plog.info("  -> Partial match: using found product + recent fallback")
+        
+        # If still no comparison products, use top 2 recent products
+        if not comparison_products and recent_products and len(recent_products) >= 2:
+            comparison_products = recent_products[:2]
+            plog.info("  -> Using top 2 recent products for comparison")
+        
+        # Generate comparison if we have products
+        if comparison_products and len(comparison_products) >= 2:
+            comparison = await _generate_comparison(comparison_products[:2], user_message)
+            if comparison:
+                plog.info("  -> Comparison generated successfully for COMPARE intent")
+                # Return early with empty products to prevent showing product cards
+                return {
+                    "intent": intent,
+                    "products": [],
+                    "all_products": [],
+                    "keywords": keywords,
+                    "data_source": "local",
+                    "detailed_intent": detailed_intent,
+                    "run_background_discovery": False,
+                    "generated_response": None,
+                    "comparison": comparison,
+                }
+        
+        # If we couldn't generate comparison, fall through to normal flow but with empty products
+        plog.warning("  -> Could not generate comparison for COMPARE intent")
+        return {
+            "intent": intent,
+            "products": [],
+            "all_products": [],
+            "keywords": keywords,
+            "data_source": "local",
+            "detailed_intent": detailed_intent,
+            "run_background_discovery": False,
+            "generated_response": None,
+            "comparison": None,
+        }
 
     # Generalized clarification check
     if intent == "RECOMMEND":
@@ -368,12 +579,25 @@ async def run_pipeline(
             )
             seen_ids = {p["id"] for p in results}
             for p in fallback_results:
-                if p["id"] not in seen_ids:
+                if p["id"] not in seen_ids and p.get("_score", 0) > 0.3:
                     results.append(p)
 
 
-    if not results:
-        plog.info("  -> No results from vector search. Falling through to synchronous online search (0 < 5).")
+        if not results:
+            plog.info("  -> No results from vector search across all collections")
+            return {
+                "intent": intent,
+                "products": [],
+                "keywords": keywords,
+                "data_source": "local",
+                "detailed_intent": detailed_intent,
+                "run_background_discovery": False,
+                "generated_response": (
+                    "Sorry, we don't currently have this product in our catalog. "
+                    "Here's what we offer: Smartphones, Laptops, Clothing, Shoes, Beauty, and Electronics. "
+                    "Would you like to explore any of these categories?"
+                ),
+            }
 
     plog.info("  -> Vector search returned %d products", len(results))
 
@@ -394,6 +618,17 @@ async def run_pipeline(
             p.get("price", "?"),
             p.get("source", "?"),
         )
+
+    # STEP 4.5: Jina Reranker (optional)
+    if settings.JINA_RERANK_ENABLED and products:
+        plog.info("STEP 4.5 -- Jina Reranker v3")
+        products = await _jina_reranker.rerank(query=user_message, products=products)
+        alpha = settings.JINA_RERANK_ALPHA
+        for p in products:
+            jina_s = p.get("_jina_score", 0.0)
+            existing_s = p.get("_score", 0.0)
+            p["_score"] = round(alpha * jina_s + (1 - alpha) * existing_s, 4)
+        plog.info("  -> After Jina blend, top score: %.4f", products[0].get("_score", 0.0) if products else 0.0)
 
     # STEP 5: Composite Scoring, Ranking, and Top 5 Selection
     plog.info("STEP 5 -- Scoring & Ranking")
@@ -636,6 +871,406 @@ async def _generate_product_response(
         return response
     except Exception as exc:
         plog.warning("  -> Response generation failed: %s", exc)
+        return None
+
+
+# ---------------------------------------------------------------------------
+# GENERAL query helpers — answer catalog questions like "most expensive product"
+# ---------------------------------------------------------------------------
+
+# Category keyword mapping for natural language queries
+_CATEGORY_KEYWORDS: Dict[str, List[str]] = {
+    "smartphones": ["phone", "smartphone", "mobile", "iphone", "android"],
+    "laptops": ["laptop", "notebook", "macbook", "computer"],
+    "fashion": ["clothes", "clothing", "shirt", "tshirt", "dress", "jeans", "pants", "jacket", "hoodie", "sweater", "kurti", "saree", "lehenga", "shorts", "trousers"],
+    "footwear": ["shoe", "shoes", "sneaker", "sneakers", "boots", "sandals", "slippers", "footwear"],
+    "beauty": ["makeup", "cosmetics", "skincare", "perfume", "lipstick", "foundation", "moisturizer", "sunscreen", "beauty"],
+    "electronics": ["headphones", "earphones", "earbuds", "watch", "smartwatch", "speaker", "camera", "gadget", "electronics", "accessories"],
+    "home_appliances": ["fan", "AC", "refrigerator", "washing machine", "microwave", "home appliance"],
+}
+
+# Metric keyword mapping
+_METRIC_KEYWORDS: Dict[str, List[str]] = {
+    "price": ["price", "expensive", "cost", "costly", "cheap", "cheapest", "budget", "rupee", "rs", "₹", "affordable"],
+    "rating": ["rating", "rated", "review", "best rated", "top rated", "stars", "highest rated"],
+    "discount": ["discount", "off", "sale", "deal", "offer", "percentage off"],
+}
+
+# Direction keyword mapping
+_DIRECTION_KEYWORDS: Dict[str, List[str]] = {
+    "max": ["most", "highest", "top", "best", "expensive", "priciest", "costliest", "maximum"],
+    "min": ["least", "lowest", "cheapest", "budget", "affordable", "minimum", "cheapest"],
+    "count": ["how many", "count", "number", "total", "many"],
+    "list": ["list", "show", "all", "every", "each", "which", "what are"],
+    "exists": ["do you have", "do you sell", "is there", "available", "stock"],
+}
+
+
+def _parse_general_query(user_message: str) -> Dict[str, Any]:
+    """Parse a GENERAL query to extract metric, direction, and category.
+
+    Handles questions like:
+    - "What is the most expensive product?" → price, max, all categories
+    - "What is the cheapest laptop?" → price, min, laptops
+    - "How many products do you have?" → count, count, all
+    - "Do you sell headphones?" → exists, exists, electronics
+    - "What are the best rated phones?" → rating, max, smartphones
+    - "Show me all watches" → list, list, electronics
+    """
+    low = user_message.lower()
+
+    # Detect category first (most specific match)
+    category = None
+    for cat, keywords in _CATEGORY_KEYWORDS.items():
+        for kw in keywords:
+            # Use word boundary matching for short keywords to avoid false positives
+            if len(kw) <= 3:
+                if re.search(r'\b' + re.escape(kw) + r'\b', low):
+                    category = cat
+                    break
+            else:
+                if kw in low:
+                    category = cat
+                    break
+        if category:
+            break
+
+    # Detect direction FIRST (more specific patterns override defaults)
+    direction = "list"  # default
+    metric = "price"  # default
+
+    # --- Direction detection (order matters: most specific first) ---
+
+    # Count queries
+    if re.search(r'\b(how many|count|number of|total|total number)\b', low):
+        metric = "count"
+        direction = "count"
+
+    # Existence queries
+    elif re.search(r'\b(do you (have|sell|stock|carry|offer)|is there|are there|available|in stock)\b', low):
+        metric = "exists"
+        direction = "exists"
+
+    # Max queries: "most expensive", "highest rated", "best", "top"
+    elif re.search(r'\b(most|highest|top|best|maximum|max|priciest|costliest)\b', low):
+        direction = "max"
+
+    # Min queries: "cheapest", "lowest", "least", "budget", "affordable"
+    elif re.search(r'\b(cheapest|lowest|least|budget|affordable|minimum|min|lowest priced)\b', low):
+        direction = "min"
+
+    # List queries: "show me", "list", "all", "what are"
+    elif re.search(r'\b(show|list|all|every|each|what are|which|display)\b', low):
+        direction = "list"
+
+    # --- Metric detection (based on keywords present) ---
+
+    # Price-related
+    if re.search(r'\b(price|expensive|cost|costly|cheap|cheapest|budget|rupee|rs\.?|₹|affordable|priced|pricing)\b', low):
+        metric = "price"
+
+    # Rating-related
+    elif re.search(r'\b(rating|rated|review|stars|best rated|top rated|highest rated|quality)\b', low):
+        metric = "rating"
+
+    # Discount-related
+    elif re.search(r'\b(discount|off|sale|deal|offer|percentage|cashback)\b', low):
+        metric = "discount"
+
+    # Override for expensive/cheap (always price + max/min)
+    if re.search(r'\b(expensive|costly|priciest|costliest|high priced|premium)\b', low):
+        metric = "price"
+        direction = "max"
+    elif re.search(r'\b(cheap|cheapest|affordable|budget|low priced|less expensive)\b', low):
+        metric = "price"
+        direction = "min"
+
+    return {
+        "metric": metric,
+        "direction": direction,
+        "category": category,
+    }
+
+
+async def _fetch_general_query_products(parsed: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """Fetch products from the database based on parsed query intent.
+
+    Uses get_all_products() to fetch ALL products without vector similarity,
+    then sorts/filters in Python for accurate results.
+    """
+    metric = parsed.get("metric", "price")
+    direction = parsed.get("direction", "list")
+    category = parsed.get("category")
+
+    # For count queries, fetch ALL products from each category
+    if metric == "count" or direction == "count":
+        all_products = []
+        categories = list(_CATEGORY_KEYWORDS.keys())
+        for cat in categories:
+            try:
+                results = await _vector_service.get_all_products(cat, limit=1000)
+                all_products.extend(results)
+            except Exception:
+                pass
+        return all_products
+
+    if direction == "exists":
+        # Fetch ALL products from the suspected category (or first 3)
+        cats_to_search = [category] if category else list(_CATEGORY_KEYWORDS.keys())[:3]
+        all_products = []
+        for cat in cats_to_search:
+            try:
+                results = await _vector_service.get_all_products(cat, limit=1000)
+                all_products.extend(results)
+            except Exception:
+                pass
+        return all_products
+
+    # For price/rating/discount queries, fetch ALL products from relevant categories
+    cats_to_search = [category] if category else list(_CATEGORY_KEYWORDS.keys())
+    all_products = []
+    for cat in cats_to_search:
+        try:
+            results = await _vector_service.get_all_products(cat, limit=1000)
+            all_products.extend(results)
+        except Exception:
+            pass
+
+    if not all_products:
+        return []
+
+    # Sort by the relevant metric
+    if metric == "price":
+        all_products.sort(key=lambda p: p.get("price") or 0, reverse=(direction == "max"))
+    elif metric == "rating":
+        all_products.sort(key=lambda p: p.get("rating") or 0, reverse=(direction == "max"))
+    elif metric == "discount":
+        all_products.sort(key=lambda p: p.get("discount") or 0, reverse=(direction == "max"))
+
+    # Return top result for max/min, or top 5 for list
+    if direction in ("max", "min"):
+        return all_products[:1]
+    return all_products[:5]
+
+
+def _format_catalog_for_general(products: List[Dict[str, Any]], parsed: Dict[str, Any]) -> str:
+    """Format product data for the general query LLM prompt."""
+    if not products:
+        return "No products found in the catalog."
+
+    metric = parsed.get("metric", "price")
+    direction = parsed.get("direction", "list")
+    category = parsed.get("category")
+
+    lines = []
+    if direction == "count":
+        # Group by category for count queries
+        cat_counts: Dict[str, int] = {}
+        for p in products:
+            cat = p.get("category", "other")
+            cat_counts[cat] = cat_counts.get(cat, 0) + 1
+        lines.append(f"Total products in catalog: {len(products)}")
+        for cat, count in cat_counts.items():
+            lines.append(f"  - {cat}: {count} products")
+        return "\n".join(lines)
+
+    if direction == "exists":
+        if products:
+            cats = set(p.get("category", "unknown") for p in products)
+            return f"Yes, we have products in these categories: {', '.join(cats)}. Found {len(products)} matching products."
+        return "No matching products found in the catalog."
+
+    # For max/min/list, format product details
+    for i, p in enumerate(products[:10], 1):
+        name = p.get("name", "Unknown")
+        brand = p.get("brand", "Unknown")
+        price = p.get("price", "N/A")
+        cat = p.get("category", "other")
+        rating = p.get("rating", "N/A")
+        discount = p.get("discount")
+        price_str = f"Rs {price:,.0f}" if isinstance(price, (int, float)) and price else "N/A"
+        rating_str = f"{rating}/5" if rating else "N/A"
+        line = f"{i}. {brand} {name} | Category: {cat} | Price: {price_str} | Rating: {rating_str}"
+        if discount:
+            line += f" | Discount: {discount}%"
+        lines.append(line)
+
+    return "\n".join(lines)
+
+
+async def _generate_general_response(
+    user_message: str,
+    products: List[Dict[str, Any]],
+    parsed: Dict[str, Any],
+) -> Optional[str]:
+    """Use LLM to generate a response for a GENERAL catalog query."""
+    try:
+        catalog_text = _format_catalog_for_general(products, parsed)
+        prompt = _GENERAL_QUERY_PROMPT.format(
+            product_catalog=catalog_text,
+            user_message=user_message,
+        )
+        messages = [
+            {"role": "system", "content": "You are a helpful e-commerce assistant. You answer questions about the store's product catalog using ONLY the provided product data. Be concise and mention specific product names, prices, and brands when relevant."},
+            {"role": "user", "content": prompt},
+        ]
+        loop = asyncio.get_running_loop()
+        response = await loop.run_in_executor(None, _llm_gateway.call, "response_generation", messages)
+        return response
+    except Exception as exc:
+        plog.warning("  -> General query response generation failed: %s", exc)
+        return None
+
+
+# ---------------------------------------------------------------------------
+# EXPLAIN query helpers — answer product-specific questions
+# ---------------------------------------------------------------------------
+
+def _parse_product_name(user_message: str) -> Optional[str]:
+    """Extract a product name from the user's question."""
+    low = user_message.lower()
+
+    # Common patterns for product questions
+    patterns = [
+        r'(?:tell me about|explain|describe|what is|what are the (?:specs|features|details))\s+(.+?)(?:\?|$)',
+        r'(?:how is|how does|how good is)\s+(.+?)(?:\?|$)',
+        r'(?:show me|details of|information about)\s+(.+?)(?:\?|$)',
+        r'(.+?)(?:\s+specs|\s+features|\s+details|\s+price|\s+rating)(?:\?|$)',
+    ]
+
+    for pattern in patterns:
+        match = re.search(pattern, low)
+        if match:
+            name = match.group(1).strip()
+            # Clean up common fillers
+            fillers = ['the', 'a', 'an', 'this', 'that', 'your', 'my', 'some', 'any']
+            words = name.split()
+            cleaned = [w for w in words if w not in fillers]
+            if cleaned:
+                return ' '.join(cleaned)
+
+    # Fallback: check if any known brand/product keyword is mentioned
+    brand_keywords = [
+        'iphone', 'samsung', 'galaxy', 'oneplus', 'pixel', 'redmi', 'realme', 'xiaomi',
+        'macbook', 'dell', 'hp', 'lenovo', 'asus', 'acer',
+        'nike', 'adidas', 'puma', 'reebok',
+        'sony', 'jbl', 'bose', 'boat',
+        'loreal', 'maybelline', 'mac', 'nike',
+    ]
+    for brand in brand_keywords:
+        if brand in low:
+            # Extract surrounding context as product name
+            idx = low.index(brand)
+            start = max(0, idx - 20)
+            end = min(len(user_message), idx + len(brand) + 30)
+            snippet = user_message[start:end].strip()
+            # Clean up
+            snippet = re.sub(r'[?.!,]', '', snippet).strip()
+            return snippet
+
+    return None
+
+
+async def _fetch_product_by_name(product_name: str) -> List[Dict[str, Any]]:
+    """Search for a specific product by name across all categories."""
+    if not product_name:
+        return []
+
+    # Search across all categories
+    all_products = []
+    categories = list(_CATEGORY_KEYWORDS.keys())
+
+    for cat in categories:
+        try:
+            results = await _vector_service.search_collection(
+                cat,
+                query=product_name,
+                n=10,
+                embedding=_embedding_service.generate(product_name),
+            )
+            all_products.extend(results)
+        except Exception:
+            pass
+
+    if not all_products:
+        return []
+
+    # Sort by relevance score
+    all_products.sort(key=lambda p: p.get("_score", 0), reverse=True)
+
+    # Return top matches (score > 0.3 indicates reasonable match)
+    good_matches = [p for p in all_products if p.get("_score", 0) > 0.3]
+    return good_matches[:5] if good_matches else all_products[:3]
+
+
+def _format_product_for_explain(products: List[Dict[str, Any]]) -> str:
+    """Format product details for the EXPLAIN LLM prompt."""
+    if not products:
+        return "No product found matching the query."
+
+    lines = []
+    for i, p in enumerate(products[:3], 1):  # Max 3 products
+        name = p.get("name", "Unknown")
+        brand = p.get("brand", "Unknown")
+        price = p.get("price", "N/A")
+        mrp = p.get("mrp")
+        rating = p.get("rating")
+        discount = p.get("discount")
+        category = p.get("category", "other")
+        description = p.get("description", "")
+        specs = p.get("specifications", {})
+        source = p.get("source", "")
+        url = p.get("url", "")
+        availability = p.get("availability", "In Stock")
+
+        price_str = f"Rs {price:,.0f}" if isinstance(price, (int, float)) and price else "N/A"
+        mrp_str = f"Rs {mrp:,.0f}" if isinstance(mrp, (int, float)) and mrp else "N/A"
+        rating_str = f"{rating}/5" if rating else "N/A"
+
+        lines.append(f"--- Product {i} ---")
+        lines.append(f"Name: {brand} {name}")
+        lines.append(f"Category: {category}")
+        lines.append(f"Price: {price_str}")
+        if mrp and price and mrp > price:
+            lines.append(f"MRP: {mrp_str}")
+        if discount:
+            lines.append(f"Discount: {discount}%")
+        lines.append(f"Rating: {rating_str}")
+        lines.append(f"Availability: {availability}")
+        lines.append(f"Source: {source}")
+        if url:
+            lines.append(f"URL: {url}")
+        if description:
+            lines.append(f"Description: {description}")
+        if specs:
+            lines.append("Specifications:")
+            for key, val in specs.items():
+                lines.append(f"  - {key}: {val}")
+        lines.append("")
+
+    return "\n".join(lines)
+
+
+async def _generate_explain_response(
+    user_message: str,
+    products: List[Dict[str, Any]],
+) -> Optional[str]:
+    """Use LLM to generate a response for a product-specific question."""
+    try:
+        product_text = _format_product_for_explain(products)
+        prompt = _EXPLAIN_PRODUCT_PROMPT.format(
+            product_details=product_text,
+            user_message=user_message,
+        )
+        messages = [
+            {"role": "system", "content": "You are a helpful e-commerce product expert. You answer questions about specific products using ONLY the provided product data. Be concise and mention specific specs, features, and values when relevant."},
+            {"role": "user", "content": prompt},
+        ]
+        loop = asyncio.get_running_loop()
+        response = await loop.run_in_executor(None, _llm_gateway.call, "response_generation", messages)
+        return response
+    except Exception as exc:
+        plog.warning("  -> Explain product response generation failed: %s", exc)
         return None
 
 

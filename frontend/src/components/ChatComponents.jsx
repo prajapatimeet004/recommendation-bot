@@ -222,7 +222,7 @@ export const ProductCard = ({ product, onCompareToggle, isCompared, index = 0 })
         )}
 
         {/* Product Name (Editorial Font) */}
-        <h4 className="font-editorial font-semibold text-white text-lg leading-tight line-clamp-2 mb-2" title={product.name}>
+        <h4 className="font-editorial font-semibold text-white text-lg leading-tight mb-2" title={product.name}>
           {product.name}
         </h4>
 
@@ -367,14 +367,14 @@ export const ComparisonView = ({ comparison }) => {
               <th className="p-3 border-l border-slate-800/80 w-1/3">
                 <div className="flex flex-col">
                   <span className="text-slate-400 text-[10px] font-medium">{prod1.brand}</span>
-                  <span className="text-white font-bold text-sm line-clamp-1">{prod1.name}</span>
+                  <span className="text-white font-bold text-sm" title={prod1.name}>{prod1.name}</span>
                   <span className="text-brand-300 font-bold mt-1 text-sm">₹{prod1.price?.toLocaleString('en-IN')}</span>
                 </div>
               </th>
               <th className="p-3 border-l border-slate-800/80 w-1/3">
                 <div className="flex flex-col">
                   <span className="text-slate-400 text-[10px] font-medium">{prod2.brand}</span>
-                  <span className="text-white font-bold text-sm line-clamp-1">{prod2.name}</span>
+                  <span className="text-white font-bold text-sm" title={prod2.name}>{prod2.name}</span>
                   <span className="text-brand-300 font-bold mt-1 text-sm">₹{prod2.price?.toLocaleString('en-IN')}</span>
                 </div>
               </th>

@@ -213,7 +213,7 @@ async def _handle_pagination(request: ChatRequest, page_token: str, background_t
         db_products = await _vector_service.search_all_collections(
             [predicted_cat], 
             query, 
-            n=offset + 6,
+            n=50,
             budget=budget,
             gender=gender,
             brand_preference=brand_pref
@@ -321,8 +321,25 @@ def _map_intent(intent: str) -> ResponseType:
 
 def _generate_follow_ups(intent: str, products: List[Dict[str, Any]], clarification_options: Optional[List[str]] = None) -> List[str]:
     follow_ups = []
-    if intent in ("GREETING", "GENERAL"):
+    if intent == "GREETING":
         return ["Best laptop under ₹80,000", "Gym shoes and clothes", "Smartphones under ₹40,000"]
+    if intent == "GENERAL":
+        if products:
+            # If products were returned, suggest related queries
+            category = products[0].get("category", "other") if products else "other"
+            category_followups = {
+                "smartphones": ["Show cheaper phones", "Best rated phones", "Compare top phones"],
+                "laptops": ["Show cheaper laptops", "Best rated laptops", "Compare top laptops"],
+                "fashion": ["Show more clothing", "Men's fashion", "Women's fashion"],
+                "footwear": ["Show running shoes", "Casual shoes", "Formal shoes"],
+                "beauty": ["Show skincare products", "Men's grooming", "Best makeup deals"],
+                "electronics": ["Show headphones", "Best watches", "Audio accessories"],
+            }
+            follow_ups.extend(category_followups.get(category, ["Show more", "What's cheapest?"]))
+        else:
+            follow_ups.extend(["Most expensive product", "Cheapest phone", "Show all laptops"])
+        follow_ups.extend(["Search again", "Find accessories"])
+        return follow_ups
     if intent == "NEEDS_CLARIFICATION":
         return clarification_options or ["For Men", "For Women", "For Both"]
     if products:

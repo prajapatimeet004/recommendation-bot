@@ -77,13 +77,6 @@ def determine_clarification(
 
     category = detailed_intent.get("category", "other")
 
-    # 1. No determinable category
-    if category == "other":
-        return ClarificationNeed(
-            "What type of product are you looking for?",
-            ["Smartphones", "Laptops", "Clothing", "Shoes", "Beauty", "Electronics"],
-        )
-
     # In LLM fallback mode, only check things detectable via regex
     if is_llm_fallback:
         return _fallback_clarification(detailed_intent, user_message, category)

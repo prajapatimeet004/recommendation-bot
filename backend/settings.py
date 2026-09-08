@@ -62,5 +62,12 @@ class Settings:
     EMBEDDING_MODEL_NAME: str = os.environ.get("EMBEDDING_MODEL_NAME", "all-MiniLM-L6-v2")
     EMBEDDING_LOCAL_FILES_ONLY: bool = os.environ.get("EMBEDDING_LOCAL_FILES_ONLY", "true").lower() == "true"
 
+    # Jina Reranker
+    JINA_RERANK_ENABLED: bool = os.environ.get("JINA_RERANK_ENABLED", "false").lower() == "true"
+    JINA_API_KEY: str = os.environ.get("JINA_API_KEY", "")
+    JINA_RERANK_MODEL: str = os.environ.get("JINA_RERANK_MODEL", "jina-reranker-v3")
+    JINA_RERANK_TOP_N: int = int(os.environ.get("JINA_RERANK_TOP_N", "20"))
+    JINA_RERANK_ALPHA: float = float(os.environ.get("JINA_RERANK_ALPHA", "0.6"))
+
 
 settings = Settings()
